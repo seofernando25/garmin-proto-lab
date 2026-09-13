@@ -21,6 +21,7 @@ from garmin_proto_lab.ancs import (
     NotificationActions,
     NotificationAttributeID,
     NotificationAttributeRequest,
+    NotificationRecord,
     NotificationSource,
     PerformAndroidAction,
     PerformNotificationAction,
@@ -148,3 +149,55 @@ def test_control_point_parser_and_semantic_error_codes() -> None:
     assert validate_control_point(b"D") == 160
     # command + notification id, but no requested attributes
     assert validate_control_point(bytes([0, 1, 0, 0, 0])) == 162
+
+
+def test_notification_record_builds_requested_attributes_exactly() -> None:
+    record = NotificationRecord(
+        77,
+        "com.example.chat",
+        app_display_name="Example Chat",
+        title="A long title 🔔",
+        subtitle="thread",
+        message="hello 😀",
+        date_text="20260913T160000",
+        positive_action_label="Open",
+        negative_action_label="Dismiss",
+        phone_number="+16135550123",
+        conversation_id="abc",
+        actions=(
+            NotificationAction(1, ActionFlag.POSITIVE_ACTION, "Open thread"),
+            NotificationAction(2, ActionFlag.REQUEST_INPUT | ActionFlag.POSITIVE_ACTION, "Reply now"),
+            NotificationAction(3, ActionFlag.DISMISS_ACTION, "Dismiss"),
+        ),
+        media_object_count=2,
+    )
+    request = GetNotificationAttributesRequest(
+        77,
+        (
+            NotificationAttributeRequest(NotificationAttributeID.APP_IDENTIFIER),
+            NotificationAttributeRequest(NotificationAttributeID.TITLE, 8),
+            NotificationAttributeRequest(NotificationAttributeID.MESSAGE, 64),
+            NotificationAttributeRequest(NotificationAttributeID.MESSAGE_SIZE),
+            NotificationAttributeRequest(NotificationAttributeID.DATE),
+            NotificationAttributeRequest(NotificationAttributeID.ACTIONS, 6, 2, 0),
+            NotificationAttributeRequest(NotificationAttributeID.MEDIA_OBJECT_COUNT),
+        ),
+    )
+    response = record.attribute_response(request)
+    values = {int(item.attribute_id): item.value for item in response.attributes}
+    assert values[int(NotificationAttributeID.APP_IDENTIFIER)] == b"com.example.chat"
+    assert values[int(NotificationAttributeID.TITLE)].decode() == "A long t"
+    # Java String.length() counts UTF-16 code units; the emoji contributes two.
+    assert values[int(NotificationAttributeID.MESSAGE_SIZE)] == b"8"
+    assert values[int(NotificationAttributeID.DATE)] == b"20260913T160000"
+    actions = NotificationActions.parse(values[int(NotificationAttributeID.ACTIONS)])
+    assert [action.action_id for action in actions.actions] == [1, 3]
+    assert all(len(action.title.encode()) <= 6 for action in actions.actions)
+    assert values[int(NotificationAttributeID.MEDIA_OBJECT_COUNT)] == b"2"
+
+
+def test_notification_record_app_display_name_response() -> None:
+    record = NotificationRecord(1, "com.example", app_display_name="Example")
+    request = GetAppAttributesRequest("com.example", (AppAttributeID.DISPLAY_NAME,))
+    response = record.app_attribute_response(request)
+    assert response.attributes[0].value == b"Example"

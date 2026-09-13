@@ -12,7 +12,18 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Callable
 
-from .ancs import NotificationSource, parse_control_point, validate_control_point
+from .ancs import (
+    CategoryID,
+    EventFlag,
+    EventID,
+    FeatureFlag,
+    GetAppAttributesRequest,
+    GetNotificationAttributesRequest,
+    NotificationRecord,
+    NotificationSource,
+    parse_control_point,
+    validate_control_point,
+)
 from .auth_protocol import AUTH_IDS, AuthProtocolEngine, EstablishedSession
 from .battery import BatteryStatus, build_phone_battery_status, parse_battery_status
 from .configuration import Configuration
@@ -169,6 +180,7 @@ class GarminClient:
     events: asyncio.Queue[SemanticEvent] = field(default_factory=asyncio.Queue)
     session_key: bytes | None = None
     feature_capabilities: FeatureCapabilitiesResponse | None = None
+    notifications: dict[int, NotificationRecord] = field(default_factory=dict)
     _time_request_seen: asyncio.Event = field(default_factory=asyncio.Event)
     _tasks: set[asyncio.Task[Any]] = field(default_factory=set)
 
@@ -302,6 +314,8 @@ class GarminClient:
                 await self.link.respond(frame, ResponseStatus.ACK, response.encode())
                 value = parse_control_point(clear) if ancs_error == 0 else clear
                 await self._emit(SemanticKind.GNCS_CONTROL_POINT, value, message_type)
+                if ancs_error == 0 and isinstance(value, (GetNotificationAttributesRequest, GetAppAttributesRequest)):
+                    self._spawn(self._serve_notification_attributes(value))
                 return
 
             await self._emit(SemanticKind.UNKNOWN, frame, message_type)
@@ -382,6 +396,85 @@ class GarminClient:
     async def send_notification_source(self, source: NotificationSource) -> None:
         payload = encode_notification_source_payload(source.encode(), self.session_key)
         await self.link.request(MESSAGE_GNCS_NOTIFICATION_SOURCE, payload)
+
+    async def publish_notification(
+        self,
+        record: NotificationRecord,
+        *,
+        category: CategoryID | int = CategoryID.OTHER,
+        category_count: int = 1,
+        silent: bool = False,
+    ) -> None:
+        """Register application-owned notification data and announce it to the watch."""
+        self.notifications[record.notification_id] = record
+        event_flags = EventFlag.SILENT if silent else EventFlag.IMPORTANT
+        if record.positive_action_label:
+            event_flags |= EventFlag.POSITIVE_ACTION
+        if record.negative_action_label:
+            event_flags |= EventFlag.NEGATIVE_ACTION
+        feature_flags = FeatureFlag(0)
+        if record.phone_number:
+            feature_flags |= FeatureFlag.PHONE_NUMBER_AVAILABLE
+        if record.actions:
+            feature_flags |= FeatureFlag.HAS_ANDROID_ACTIONS
+        if record.media_object_count:
+            feature_flags |= FeatureFlag.HAS_MEDIA
+        await self.send_notification_source(
+            NotificationSource(
+                EventID.ADDED,
+                event_flags,
+                category,
+                category_count,
+                record.notification_id,
+                feature_flags,
+            )
+        )
+
+    async def remove_notification(self, notification_id: int) -> None:
+        self.notifications.pop(notification_id, None)
+        await self.send_notification_source(
+            NotificationSource(
+                EventID.REMOVED,
+                EventFlag.SILENT,
+                CategoryID.OTHER,
+                0,
+                notification_id,
+                FeatureFlag(0),
+            )
+        )
+
+    async def _serve_notification_attributes(
+        self,
+        request: GetNotificationAttributesRequest | GetAppAttributesRequest,
+    ) -> None:
+        if isinstance(request, GetNotificationAttributesRequest):
+            record = self.notifications.get(request.notification_id)
+            if record is None:
+                # Static Garmin behavior sends a removed source when the watch
+                # asks about a notification that is no longer active.
+                await self.send_notification_source(
+                    NotificationSource(
+                        EventID.REMOVED,
+                        EventFlag.SILENT,
+                        CategoryID.OTHER,
+                        0,
+                        request.notification_id,
+                        FeatureFlag(0),
+                    )
+                )
+                return
+            response = record.attribute_response(request)
+            await self.send_notification_data(response.encode())
+            return
+
+        # App attributes are served only from an application record we actually
+        # own; do not invent a package display name.
+        record = next(
+            (item for item in self.notifications.values() if item.app_identifier == request.app_identifier),
+            None,
+        )
+        if record is not None:
+            await self.send_notification_data(record.app_attribute_response(request).encode())
 
     async def send_notification_data(
         self,

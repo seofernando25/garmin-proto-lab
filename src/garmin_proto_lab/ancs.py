@@ -481,6 +481,107 @@ class NotificationActions:
         return cls(tuple(actions))
 
 
+@dataclass(frozen=True, slots=True)
+class NotificationRecord:
+    """Application-owned notification data served to a watch on GNCS 5034.
+
+    Values map directly to the statically recovered ANCS attribute switch.
+    ``date_text`` is the already formatted `yyyyMMdd'T'HHmmss` value so the
+    protocol layer does not guess the application's timezone policy.
+    """
+
+    notification_id: int
+    app_identifier: str
+    app_display_name: str = ""
+    title: str = ""
+    subtitle: str = ""
+    message: str = ""
+    date_text: str = ""
+    positive_action_label: str = ""
+    negative_action_label: str = ""
+    phone_number: str = ""
+    conversation_id: str = ""
+    actions: tuple[NotificationAction, ...] = ()
+    media_object_count: int = 0
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.notification_id <= 0xFFFFFFFF:
+            raise AncsError("notification_id out of uint32 range")
+        if not self.app_identifier or "\x00" in self.app_identifier:
+            raise AncsError("app_identifier must be non-empty and NUL-free")
+        if self.media_object_count < 0:
+            raise AncsError("media_object_count cannot be negative")
+
+    def attribute_response(self, request: GetNotificationAttributesRequest) -> GetNotificationAttributesResponse:
+        if request.notification_id != self.notification_id:
+            raise AncsError("attribute request does not match notification record")
+        values: list[AttributeValue] = []
+        limits: dict[int, int] = {}
+        message_units = len(self.message.encode("utf-16-le")) // 2
+        for requested in request.attributes:
+            raw_id = int(requested.attribute_id)
+            try:
+                attr = NotificationAttributeID(raw_id)
+            except ValueError:
+                values.append(AttributeValue(raw_id, b""))
+                continue
+            if attr is NotificationAttributeID.APP_IDENTIFIER:
+                value = self.app_identifier.encode()
+            elif attr is NotificationAttributeID.TITLE:
+                value = self.title.encode()
+            elif attr is NotificationAttributeID.SUBTITLE:
+                value = self.subtitle.encode()
+            elif attr is NotificationAttributeID.MESSAGE:
+                value = self.message.encode()
+            elif attr is NotificationAttributeID.MESSAGE_SIZE:
+                value = str(message_units).encode()
+            elif attr is NotificationAttributeID.DATE:
+                value = self.date_text.encode()
+            elif attr is NotificationAttributeID.POSITIVE_ACTION_LABEL:
+                value = self.positive_action_label.encode()
+            elif attr is NotificationAttributeID.NEGATIVE_ACTION_LABEL:
+                value = self.negative_action_label.encode()
+            elif attr is NotificationAttributeID.PHONE_NUMBER:
+                value = self.phone_number.encode()
+            elif attr is NotificationAttributeID.CONVERSATION_ID:
+                value = self.conversation_id.encode()
+            elif attr is NotificationAttributeID.ACTIONS:
+                requested_actions = self.actions
+                if requested.action_flags is not None and not (requested.action_flags & int(ActionFlag.REQUEST_INPUT)):
+                    requested_actions = tuple(
+                        action for action in requested_actions if not int(action.flags) & int(ActionFlag.REQUEST_INPUT)
+                    )
+                max_actions = requested.max_actions if requested.max_actions is not None else len(requested_actions)
+                max_title = requested.max_length if requested.max_length is not None else 255
+                adjusted = tuple(
+                    NotificationAction(action.action_id, action.flags, action.title, min(action.max_title_length, max_title))
+                    for action in requested_actions[:max_actions]
+                )
+                value = NotificationActions(adjusted).encode()
+            elif attr is NotificationAttributeID.MEDIA_OBJECT_COUNT:
+                value = str(self.media_object_count).encode()
+            else:
+                value = b""
+            values.append(AttributeValue(attr, value))
+            if attr in STRING_LIMIT_ATTRIBUTES and requested.max_length is not None:
+                limits[raw_id] = requested.max_length
+        # Apply request limits exactly when serializing; the response object
+        # itself retains the source bytes for inspectability.
+        response = GetNotificationAttributesResponse(self.notification_id, tuple(values))
+        if limits:
+            return GetNotificationAttributesResponse.parse(response.encode(limits))
+        return response
+
+    def app_attribute_response(self, request: GetAppAttributesRequest) -> GetAppAttributesResponse:
+        values: list[AttributeValue] = []
+        for requested in request.attributes:
+            if int(requested) == int(AppAttributeID.DISPLAY_NAME):
+                values.append(AttributeValue(AppAttributeID.DISPLAY_NAME, self.app_display_name.encode()))
+            else:
+                values.append(AttributeValue(int(requested), b""))
+        return GetAppAttributesResponse(request.app_identifier, tuple(values))
+
+
 def parse_control_point(payload: bytes):
     """Parse one ANCS-shaped GNCS Control Point command.
 

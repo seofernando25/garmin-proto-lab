@@ -745,6 +745,14 @@ The Android-actions attribute value is a count byte followed by descriptors. Eac
 
 When the GNCS notification sender has no session key, P-0503 bytes are sent directly as message 5033 request data. When a GNCS session key is present, the semantic payload is transformed with the self-describing padded XXTEA mode before being sent as 5033. This is the same padded transform used for GNCS 5035 chunk data and is distinct from the secure-session outer packet wrapper.
 
+### P-0507 — Notification attribute/action lifecycle (`SUPPORTED`, S-0014; T-0058)
+
+After a valid 5034 Control Point acknowledgement, the host serves requested notification attributes through 5035 Data Source. The recovered attribute values are application identifier, date text `yyyyMMdd'T'HHmmss`, message, decimal Java-string message length, subtitle, title, positive/negative action labels, phone number, conversation ID, serialized Android actions, and decimal media-object count. Requested string lengths are honored on UTF-8 boundaries; action count/title length/input-support flags bound the actions response.
+
+If the requested notification is no longer active, the host sends a 5033 removed source for that notification ID instead of inventing attributes. App-attribute request ID 0 returns the application display name. Perform-notification-action and Android-action requests are surfaced to application callbacks; the transport layer does not execute arbitrary application actions itself.
+
+The reference client therefore owns an explicit `NotificationRecord` cache, automatically serves only records supplied by its application, and emits action requests semantically for application policy.
+
 ---
 
 ## Layer 8 — GDI Smart protobuf transport
@@ -921,6 +929,7 @@ Current local tests are offline/static-proof tests and are not substitutes for t
 | T-0051/T-0052 | notification/app attribute request-response codecs | P-0504 |
 | T-0053 | action/dismissal/control-point codecs | P-0505 |
 | T-0054 | GNCS optional XXTEA + control-point semantic ACK/decrypt | P-0504/P-0506 |
+| T-0058 | `tests/test_ancs.py` + `tests/test_client.py` application-owned attribute/action lifecycle | P-0507 |
 | T-0060 | `tests/test_client.py` handshake/time/sync/GNCS orchestration | P-0301..P-0506 |
 | T-0061 | `tests/test_protobuf_transport.py` + `tests/test_protobuf_link.py` chunk/reassembly/cancel/error simulation | P-0600 |
 | T-0062 | `tests/test_protobuf_wire.py` bounded wire/envelope/capability vectors | P-0601..P-0603 |

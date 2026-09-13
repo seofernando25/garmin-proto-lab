@@ -104,6 +104,20 @@ class AuthProtocolEngine:
         while self._tasks:
             await asyncio.gather(*tuple(self._tasks), return_exceptions=False)
 
+    def cancel_pairing(self) -> None:
+        """Cancel user-facing pairing work and leave the session failed/closed.
+
+        This is deliberately explicit instead of treating an arbitrary task
+        cancellation as a protocol success. Persistent LTK material, if any,
+        is not deleted by a UI cancellation.
+        """
+        for task in tuple(self._tasks):
+            task.cancel()
+        self._tasks.clear()
+        if self.state.phase not in (SessionPhase.DISCONNECTED, SessionPhase.ESTABLISHED):
+            self.state.fail("pairing cancelled by user")
+        self._event("pairing_cancelled")
+
     async def handle(self, frame: Frame) -> bool:
         """Handle an inbound authentication request; return whether it was ours."""
         if frame.is_response or frame.message_type not in AUTH_IDS:

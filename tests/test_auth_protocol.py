@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from garmin_proto_lab.auth_messages import derive_session_key
+from garmin_proto_lab.auth_messages import PasskeyMode, derive_session_key
 from garmin_proto_lab.auth_protocol import AuthProtocolEngine
 from garmin_proto_lab.frame import Acknowledgement, Frame, ResponseStatus
 from garmin_proto_lab.pairing import confirm_value, passkey_from_decimal, short_term_key
@@ -218,4 +218,21 @@ def test_oob_passkey_distribution_is_dual_pairing_gated_and_redacted() -> None:
         await nondual.handle(Frame(5112, b"short", 3))
         assert link.responses[-1][1] is ResponseStatus.LENGTH_ERROR
 
+    asyncio.run(run())
+
+
+def test_explicit_pairing_cancel_fails_pending_user_flow_without_deleting_ltk() -> None:
+    async def run() -> None:
+        link = FakeAuthLink()
+        record = PairingRecord(bytes(range(16)), b"\x12\x34", bytes(range(8)))
+        store = MemoryPairingStore({"AA:BB:CC:DD:EE:FF": record})
+        engine = AuthProtocolEngine(link, "AA:BB:CC:DD:EE:FF", store)  # type: ignore[arg-type]
+        engine.state.start(0)
+        engine.state.receive_negotiation(1)
+        engine.state.receive_stk_begin(PasskeyMode.VISIBLE, 2, timeout_seconds=30)
+        assert engine.state.phase is SessionPhase.WAITING_PASSKEY
+        engine.cancel_pairing()
+        assert engine.state.phase is SessionPhase.FAILED
+        assert engine.events[-1].name == "pairing_cancelled"
+        assert store.load("AA:BB:CC:DD:EE:FF") == record
     asyncio.run(run())

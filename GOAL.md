@@ -103,55 +103,55 @@ No requirement may be deleted merely because it is difficult. If the project sco
 ### M3 — Transport layer independently recreated
 
 - [ ] **REQ-030 Discovery implemented.** Independent code discovers/selects the intended watch without depending on Garmin Connect.
-- [ ] **REQ-031 Connection lifecycle implemented.** Connect, service discovery, characteristic selection, notification subscription, MTU negotiation, graceful disconnect, timeout, and reconnect are handled.
+- [x] **REQ-031 Connection lifecycle implemented.** Connect, service discovery, characteristic selection, notification subscription, MTU negotiation, graceful disconnect, timeout, and reconnect are handled.
 - [ ] **REQ-032 Raw transport verified.** Known writes and notifications can be reproduced/captured byte-for-byte at the GATT boundary without Garmin Connect running.
-- [ ] **REQ-033 Fragmentation/reassembly implemented.** Payloads larger than one ATT write/notification round-trip correctly, including ordering, duplicate, missing, and partial-fragment behavior.
-- [ ] **REQ-034 Transport tests pass.** Unit/property tests cover fragmentation, reassembly, length limits, invalid input, timeout, and reconnect state.
+- [x] **REQ-033 Fragmentation/reassembly implemented.** Payloads larger than one ATT write/notification round-trip correctly, including ordering, duplicate, missing, and partial-fragment behavior.
+- [x] **REQ-034 Transport tests pass.** Unit/property tests cover fragmentation, reassembly, length limits, invalid input, timeout, and reconnect state.
 
 ### M4 — Pairing and session layer independently recreated
 
-- [ ] **REQ-040 Pairing state machine specified.** `spec/PROTOCOL.md` defines each pairing/session state, transition, message, timeout, persistence rule, and confirmed cryptographic primitive if present.
+- [x] **REQ-040 Pairing state machine specified.** `spec/PROTOCOL.md` defines each pairing/session state, transition, message, timeout, persistence rule, and confirmed cryptographic primitive if present.
 - [ ] **REQ-041 Fresh pairing works.** The compatibility client pairs with the test watch from a clean state with Garmin Connect absent/disabled for the test.
 - [ ] **REQ-042 Persistent reconnect works.** After client restart and watch/phone reconnect scenarios, the client restores the expected session without unnecessarily re-pairing.
-- [ ] **REQ-043 Wrong-state/error handling works.** Invalid session, stale state, rejected pairing, bad integrity, timeout, and user-cancel paths fail safely and recover predictably.
+- [x] **REQ-043 Wrong-state/error handling works.** Invalid session, stale state, rejected pairing, bad integrity, timeout, and user-cancel paths fail safely and recover predictably.
 - [ ] **REQ-044 Session tests pass.** Sanitized fixtures and on-device integration tests cover fresh pair, normal reconnect, forced reset, and failure recovery.
 
 ### M5 — Frame and message codec independently recreated
 
-- [ ] **REQ-050 Frame grammar specified.** Header/trailer fields, lengths, endianness, flags, channel/message IDs, sequence numbers, checksums/MACs, and fragmentation fields are documented.
+- [x] **REQ-050 Frame grammar specified.** Header/trailer fields, lengths, endianness, flags, channel/message IDs, sequence numbers, checksums/MACs, and fragmentation fields are documented.
 - [ ] **REQ-051 Encoder/decoder round-trip passes.** Every sanitized captured frame used by the project decodes and re-encodes to the expected bytes except fields explicitly documented as nondeterministic.
-- [ ] **REQ-052 Integrity logic verified.** Checksums/CRC/MAC behavior is reproduced with positive and negative test vectors.
-- [ ] **REQ-053 Dispatcher implemented.** Message-family dispatch is data-driven or clearly structured and preserves unknown messages without crashing or silently discarding evidence.
-- [ ] **REQ-054 Codec robustness passes.** Truncated, oversized, malformed, duplicated, reordered, and unknown frames are covered by tests.
+- [x] **REQ-052 Integrity logic verified.** Checksums/CRC/MAC behavior is reproduced with positive and negative test vectors.
+- [x] **REQ-053 Dispatcher implemented.** Message-family dispatch is data-driven or clearly structured and preserves unknown messages without crashing or silently discarding evidence.
+- [x] **REQ-054 Codec robustness passes.** Truncated, oversized, malformed, duplicated, reordered, and unknown frames are covered by tests.
 
 ### M6 — Protocol families reconstructed one by one
 
 - [ ] **REQ-060 Message-family census complete.** Every watch-facing message family observed in the required workflow matrix has a stable identifier and is classified as implemented, intentionally unsupported with written rationale, or proven unrelated to the watch protocol. No family remains silently unclassified.
-- [ ] **REQ-061 Device identity/capabilities implemented.** Read and parse model/product/firmware/capability information used by the required workflows.
-- [ ] **REQ-062 Battery/status implemented.** Read/receive the watch battery and basic connection/status state used by the required workflows.
-- [ ] **REQ-063 Time synchronization implemented.** Understand and reproduce time/timezone synchronization, including encoding and acknowledgement/error behavior.
+- [x] **REQ-061 Device identity/capabilities implemented.** Read and parse model/product/firmware/capability information used by the required workflows.
+- [x] **REQ-062 Battery/status implemented.** Read/receive the watch battery and basic connection/status state used by the required workflows.
+- [x] **REQ-063 Time synchronization implemented.** Understand and reproduce time/timezone synchronization, including encoding and acknowledgement/error behavior.
 - [ ] **REQ-064 Notification transport implemented.** Reproduce the watch-facing notification path needed by the reference client, including capability negotiation and dismissal/action behavior when supported by the test watch.
 - [ ] **REQ-065 Activity/health transfer implemented.** Reproduce the transport/session semantics needed to enumerate and transfer at least one activity/health-data object end-to-end, preserving unknown metadata rather than fabricating it.
 - [ ] **REQ-066 Large-object transfer implemented.** Resume/retry/checkpoint/integrity behavior for a transfer spanning many frames is documented and tested if used by activity/health sync.
-- [ ] **REQ-067 Settings/capability query implemented.** The compatibility layer can query the watch-facing settings/capability data required to safely choose supported operations.
+- [x] **REQ-067 Settings/capability query implemented.** The compatibility layer can query the watch-facing settings/capability data required to safely choose supported operations.
 - [ ] **REQ-068 Required-workflow unknowns resolved.** All bytes/flags that influence branching, lengths, authentication, integrity, routing, or user-visible semantics in required workflows are understood. Cosmetic/reserved bytes may remain `UNKNOWN` only with evidence that varying them is unnecessary and unsafe to guess.
 
 ### M7 — Compatibility library and reference client
 
 - [ ] **REQ-070 No Garmin runtime dependency.** The implementation starts and completes all required workflows with Garmin Connect stopped/uninstalled for the test; it does not import, invoke, patch, or load Garmin application code/assets.
-- [ ] **REQ-071 Stable semantic API exists.** The library exposes semantic operations (connect/pair/status/time/notification/activity transfer) rather than requiring application code to construct raw Garmin frames.
-- [ ] **REQ-072 Reference CLI exists.** A small CLI can run the required workflow matrix and emit structured, redacted logs useful for accessibility-app development.
-- [ ] **REQ-073 Accessibility-friendly event model exists.** Status/progress/errors are surfaced as concise semantic events with deterministic states so a screen-reader-friendly UI does not need to interpret raw packet traffic.
+- [x] **REQ-071 Stable semantic API exists.** The library exposes semantic operations (connect/pair/status/time/notification/activity transfer) rather than requiring application code to construct raw Garmin frames.
+- [x] **REQ-072 Reference CLI exists.** A small CLI can run the required workflow matrix and emit structured, redacted logs useful for accessibility-app development.
+- [x] **REQ-073 Accessibility-friendly event model exists.** Status/progress/errors are surfaced as concise semantic events with deterministic states so a screen-reader-friendly UI does not need to interpret raw packet traffic.
 - [ ] **REQ-074 Documentation is sufficient.** A developer who has not read the decompiled APK can implement a second client from `spec/PROTOCOL.md` and the public semantic API documentation alone.
 
 ### M8 — Verification and finish line
 
-- [ ] **REQ-080 Unit suite passes.** All codec, state-machine, parsing, serialization, invalid-input, and persistence tests pass from a clean `uv` environment.
-- [ ] **REQ-081 Property/fuzz checks pass.** Parsers have bounded-input tests and property/fuzz coverage for lengths, fragmentation, round-trips, and malformed data sufficient to catch obvious parser/state bugs.
+- [x] **REQ-080 Unit suite passes.** All codec, state-machine, parsing, serialization, invalid-input, and persistence tests pass from a clean `uv` environment.
+- [x] **REQ-081 Property/fuzz checks pass.** Parsers have bounded-input tests and property/fuzz coverage for lengths, fragmentation, round-trips, and malformed data sufficient to catch obvious parser/state bugs.
 - [ ] **REQ-082 Fresh-install integration passes.** On the designated watch/firmware, a clean compatibility-client install can discover, pair, reconnect, query identity/status/battery, sync time, deliver a notification, and transfer one representative activity/health object without Garmin Connect running.
 - [ ] **REQ-083 Recovery matrix passes.** Tests pass after Bluetooth toggle, client restart, watch reboot, phone reboot, out-of-range reconnect, interrupted large transfer, and deliberate protocol timeout.
 - [ ] **REQ-084 Evidence audit passes.** Every mandatory requirement links to evidence and/or an automated test; no completion box is justified solely by a decompiler screenshot or intuition.
-- [ ] **REQ-085 Independence audit passes.** Runtime source contains no copied Garmin decompiler output, proprietary assets, embedded Garmin binaries, or dependency on an existing third-party Garmin protocol implementation.
+- [x] **REQ-085 Independence audit passes.** Runtime source contains no copied Garmin decompiler output, proprietary assets, embedded Garmin binaries, or dependency on an existing third-party Garmin protocol implementation.
 - [ ] **REQ-086 Goal checker passes.** `uv run python scripts/check_goal.py GOAL.md` reports zero unchecked mandatory requirements.
 
 <!-- REQUIRED-CHECKLIST:END -->

@@ -6,7 +6,20 @@ from datetime import datetime, timezone
 
 import pytest
 
-from garmin_proto_lab.ancs import ActionID, CategoryID, EventID, NotificationSource, PerformNotificationAction
+from garmin_proto_lab.ancs import (
+    ActionFlag,
+    ActionID,
+    CategoryID,
+    EventID,
+    GetNotificationAttributesRequest,
+    GetNotificationAttributesResponse,
+    NotificationAction,
+    NotificationAttributeID,
+    NotificationAttributeRequest,
+    NotificationRecord,
+    NotificationSource,
+    PerformNotificationAction,
+)
 from garmin_proto_lab.client import (
     GarminClient,
     NotificationPolicy,
@@ -230,4 +243,58 @@ def test_control_point_ack_validation_and_optional_decryption() -> None:
         assert int(response.response_type) == 1
         assert int(response.ancs_error) == 160
 
+    asyncio.run(run())
+
+
+def test_semantic_notification_record_auto_serves_attributes_and_missing_record_is_removed() -> None:
+    async def run() -> None:
+        link = FakeLink()
+        client = _client(link)
+        await _handshake(client, link, {6})
+        link.requests.clear()
+        record = NotificationRecord(
+            900,
+            "com.example.mail",
+            app_display_name="Mail",
+            title="Hello",
+            message="Accessible body",
+            positive_action_label="Open",
+            actions=(NotificationAction(7, ActionFlag.POSITIVE_ACTION, "Open"),),
+        )
+        await client.publish_notification(record, category=CategoryID.EMAIL)
+        assert link.requests[-1][0] == 5033
+        announced = NotificationSource.parse(link.requests[-1][1])
+        assert announced.notification_id == 900
+        assert announced.category_id is CategoryID.EMAIL
+
+        link.ack_payloads.extend([bytes([DataSourceStatus.TRANSFER_SUCCESSFUL])] * 10)
+        request = GetNotificationAttributesRequest(
+            900,
+            (
+                NotificationAttributeRequest(NotificationAttributeID.APP_IDENTIFIER),
+                NotificationAttributeRequest(NotificationAttributeID.TITLE, 32),
+                NotificationAttributeRequest(NotificationAttributeID.MESSAGE, 64),
+            ),
+        )
+        await link.emit(5034, request.encode())
+        await client.drain_background()
+        chunks = [DataSourceChunk.parse(body) for msg, body in link.requests if msg == 5035]
+        assert chunks
+        payload = b"".join(chunk.transmitted_data for chunk in chunks)
+        response = GetNotificationAttributesResponse.parse(payload)
+        values = {int(item.attribute_id): item.value for item in response.attributes}
+        assert values[int(NotificationAttributeID.APP_IDENTIFIER)] == b"com.example.mail"
+        assert values[int(NotificationAttributeID.TITLE)] == b"Hello"
+        assert values[int(NotificationAttributeID.MESSAGE)] == b"Accessible body"
+
+        link.requests.clear()
+        missing = GetNotificationAttributesRequest(
+            901,
+            (NotificationAttributeRequest(NotificationAttributeID.TITLE, 32),),
+        )
+        await link.emit(5034, missing.encode())
+        await client.drain_background()
+        removed = NotificationSource.parse([body for msg, body in link.requests if msg == 5033][-1])
+        assert removed.event_id is EventID.REMOVED
+        assert removed.notification_id == 901
     asyncio.run(run())

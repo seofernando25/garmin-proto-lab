@@ -29,7 +29,7 @@ For BLE hardware commands:
 
 ```bash
 uv sync --extra hardware
-uv run garmin-proto scan --timeout 8
+uv run garmin-proto scan --seconds 8
 ```
 
 Useful offline tools:
@@ -48,7 +48,7 @@ The implementation follows:
 
 Decompiled output is local evidence only. Runtime code is written from `spec/PROTOCOL.md`, not copied from Garmin code. Existing third-party Garmin protocol implementations are intentionally excluded as implementation inputs until the independent reconstruction is verified.
 
-See `docs/INVESTIGATION.md` for the concise investigation record and `GOAL.md` for the non-negotiable completion gate.
+See `docs/INVESTIGATION.md` for the concise investigation record, `docs/API.md` for the semantic interface, `docs/HARDWARE.md` for the verification runbook, and `GOAL.md` for the non-negotiable completion gate.
 
 ## Current blocker
 
