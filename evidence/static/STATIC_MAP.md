@@ -246,3 +246,19 @@ The 16-byte directory header and byte 6 of each directory record are deliberatel
 Combined with S-0016's supported-file fallback `(dataType=128, subType=4, "FIT_TYPE_4")`, this supports treating data type 128 as the FIT type family and subtype 4 as ACTIVITY. The independent runtime exposes only names directly supported by the generated enum; manufacturer/reserved ranges with misleading decompiler labels are not assigned invented semantics.
 
 The independent `fit.py` also validates the public FIT container header and reads the standard File ID global message 0 / field 0 to cross-check the file type inside a downloaded file. This gives two independent classification signals: directory subtype and file content. Real target-watch activity/health transfer remains dynamically unconfirmed until an actual directory/file can be read.
+
+## S-0018 — GDI Smart protobuf transport and feature capabilities
+
+Static analysis of `mq2/C35222d.java` plus its smali fallback resolves the generic GDI protobuf layer rather than relying on Garmin's generated classes at runtime.
+
+- Messages 5043/5044 carry protobuf request/response chunks. Each chunk is `requestId:u16LE | offset:u32LE | totalLength:u32LE | chunkLength:u32LE | data`. The sender reserves 14 bytes from the current GFDI payload limit.
+- Each chunk receives an eight-byte acknowledgement: request ID, offset, failure flag, and status. Statuses are 0 no-error, 100 unknown request, 101 duplicate, 102 missing, 103 exceeded length, 200 parse error, and 201 unknown protobuf message. Message 5045 carries a request ID and cancels a pending protobuf exchange.
+- `GDISmartProto.Smart` has no ordinary fields; it is an extendable protobuf envelope. Core service is Smart extension field 13. GNCS service messages use Smart extension field 49.
+- Inside Core service, Feature Capabilities Request/Response are fields 8/9 and Connection Ready Notification is field 14. Legacy configuration flag 95 gates the feature-capability exchange.
+- Core Feature Capabilities Request fields are Garmin GUID bytes=1, client version=2, display name=3. The GNCS capability extension is field 12; the independent implementation does not fabricate the optional identity fields.
+- GNCS capability request fields are notification-provider version=1, disabled-reason=2, default messaging app=3 and default dialer app=4. Garmin's semantic version encoding is `major<<16 | minor<<8 | patch`. The APK's own GNCS library happens to be 7.4.30, but the compatibility client advertises its own version rather than impersonating it.
+- GNCS capability response fields are notification-client version=1 and supports-blocked-apps=2. Static behavior treats client version >=1 as supporting modified-after-added notifications.
+
+Primary evidence: `analysis/jadx/sources/mq2/C35222d.java`, `analysis/apktool/smali_classes7/mq2/d.smali`, `GDISmartProto.java`, `GDICore.java`, `GDICoreExtension.java`, `GDIGNCS.java`, `GDIGNCSExtension.java`, `aq2/C2861i.java`, and `com/garmin/android/gncs/SmartNotificationsDataHandler.java`.
+
+The runtime uses an independently written bounded protobuf-wire parser and explicitly modeled fields only; generated Garmin protobuf code is not imported or copied.

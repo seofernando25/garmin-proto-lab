@@ -40,6 +40,17 @@ from .gncs import (
 )
 from .handshake import ConfigurationStep, HandshakeState, HostIdentity
 from .link import GfdiMessageLink
+from .protobuf_link import ProtobufSmartLink
+from .smart_proto import (
+    FeatureCapabilitiesRequest,
+    FeatureCapabilitiesResponse,
+    GncsCapabilitiesAdvertisement,
+    NotificationDisabledReason,
+    build_feature_capabilities_request,
+    is_connection_ready_notification,
+    parse_feature_capabilities_response,
+    semantic_version_to_int,
+)
 from .sync import FileReady, QueuedDownload, SyncRequest
 from .time_sync import CurrentTimeResponse, build_response
 from .transport import DiscoveredDevice, TransportState
@@ -55,6 +66,8 @@ MESSAGE_GNCS_CONTROL_POINT = GNCS_CONTROL_POINT_MESSAGE_ID
 MESSAGE_SYNC_REQUEST = 5037
 MESSAGE_CONFIGURATION = 5050
 MESSAGE_CURRENT_TIME = 5052
+FEATURE_CAPABILITIES_CONFIGURATION_FLAG = 95
+GNCS_CONFIGURATION_FLAG = 6
 
 
 class ClientError(RuntimeError):
@@ -75,6 +88,8 @@ class SemanticKind(str, Enum):
     FILE_READ = "file_read"
     NOTIFICATION_SUBSCRIPTION = "notification_subscription"
     GNCS_CONTROL_POINT = "gncs_control_point"
+    FEATURE_CAPABILITIES = "feature_capabilities"
+    CONNECTION_READY = "connection_ready"
     UNKNOWN = "unknown"
     PROBLEM = "problem"
 
@@ -101,6 +116,8 @@ class SemanticEvent:
             SemanticKind.FILE_READ: "Watch file transfer complete",
             SemanticKind.NOTIFICATION_SUBSCRIPTION: "Watch changed notification subscription",
             SemanticKind.GNCS_CONTROL_POINT: "Watch requested notification details or action",
+            SemanticKind.FEATURE_CAPABILITIES: "Watch feature capabilities received",
+            SemanticKind.CONNECTION_READY: "Watch reported protocol connection ready",
             SemanticKind.UNKNOWN: "Unknown watch message received",
             SemanticKind.PROBLEM: "Watch protocol problem",
         }
@@ -147,9 +164,11 @@ class GarminClient:
     clock: Clock = _local_now
     auth: AuthProtocolEngine | None = None
     file_transfer: FileTransferClient | None = None
+    protobuf: ProtobufSmartLink | None = None
     handshake: HandshakeState = field(init=False)
     events: asyncio.Queue[SemanticEvent] = field(default_factory=asyncio.Queue)
     session_key: bytes | None = None
+    feature_capabilities: FeatureCapabilitiesResponse | None = None
     _time_request_seen: asyncio.Event = field(default_factory=asyncio.Event)
     _tasks: set[asyncio.Task[Any]] = field(default_factory=set)
 
@@ -159,6 +178,24 @@ class GarminClient:
             self.file_transfer = FileTransferClient(self.link)
         elif self.file_transfer.link is not self.link:
             raise ClientError("file-transfer client and semantic client must share the same GFDI link")
+        if self.protobuf is None:
+            self.protobuf = ProtobufSmartLink(self.link)
+        elif self.protobuf.link is not self.link:
+            raise ClientError("protobuf client and semantic client must share the same GFDI link")
+        previous_protobuf_handler = self.protobuf.request_handler
+
+        async def protobuf_request(request_id: int, serialized_smart: bytes):
+            if is_connection_ready_notification(serialized_smart):
+                await self._emit(SemanticKind.CONNECTION_READY, {"request_id": request_id}, 5043)
+                return True
+            if previous_protobuf_handler is not None:
+                result = previous_protobuf_handler(request_id, serialized_smart)
+                if hasattr(result, "__await__"):
+                    return await result
+                return result
+            return False
+
+        self.protobuf.request_handler = protobuf_request
         if self.auth is not None:
             if self.auth.link is not self.link:
                 raise ClientError("authentication engine and semantic client must share the same GFDI link")
@@ -190,6 +227,8 @@ class GarminClient:
     async def _on_incoming(self, dispatched: Any) -> None:
         frame: Frame = dispatched.frame
         message_type = frame.message_type
+        if self.protobuf is not None and await self.protobuf.handle(frame):
+            return
         if self.auth is not None and message_type in AUTH_IDS:
             if await self.auth.handle(frame):
                 return
@@ -200,6 +239,8 @@ class GarminClient:
                 step = self.handshake.receive_device_info(frame.payload)
                 if self.auth is not None:
                     self.auth.dual_pairing = step.device.dual_pairing
+                if self.protobuf is not None and step.device.max_packet_size > 14:
+                    self.protobuf.set_payload_limit(step.device.max_packet_size)
                 await self.link.respond(frame, ResponseStatus.ACK, step.acknowledgement_payload)
                 await self._emit(SemanticKind.DEVICE_INFO, step.device, message_type)
                 return
@@ -296,6 +337,44 @@ class GarminClient:
         else:
             await self.link.request(MESSAGE_SET_DEVICE_SETTINGS, build_legacy_time_settings(now))
         await self._emit(SemanticKind.TIME_SYNC_COMPLETE, now, MESSAGE_CURRENT_TIME)
+
+    async def refresh_feature_capabilities(
+        self,
+        *,
+        gncs_version: str = "0.1.0",
+        notification_disabled_reason: NotificationDisabledReason | int | None = None,
+        default_messaging_app_id: str = "",
+        default_dialer_app_id: str = "",
+    ) -> FeatureCapabilitiesResponse:
+        """Run the statically recovered Core/GNCS protobuf capability exchange.
+
+        The call is intentionally explicit and only allowed when the peer's
+        legacy Configuration advertises flag 95.  The independent client uses
+        its own semantic version instead of impersonating Garmin's library
+        version.
+        """
+        peer = self.peer_configuration
+        if peer is None:
+            raise ClientError("cannot query feature capabilities before peer configuration")
+        if FEATURE_CAPABILITIES_CONFIGURATION_FLAG not in peer.effective_flags():
+            raise ClientError("watch did not advertise protobuf feature-capabilities flag 95")
+        if GNCS_CONFIGURATION_FLAG not in self.host_configuration_flags:
+            raise ClientError("GNCS feature capabilities require host configuration flag 6")
+        if self.protobuf is None:
+            raise ClientError("protobuf transport is not configured")
+        request = FeatureCapabilitiesRequest(
+            gncs=GncsCapabilitiesAdvertisement(
+                semantic_version_to_int(gncs_version),
+                notification_disabled_reason,
+                default_messaging_app_id,
+                default_dialer_app_id,
+            )
+        )
+        response_bytes = await self.protobuf.request(build_feature_capabilities_request(request))
+        response = parse_feature_capabilities_response(response_bytes)
+        self.feature_capabilities = response
+        await self._emit(SemanticKind.FEATURE_CAPABILITIES, response, 5044)
+        return response
 
     async def send_phone_battery(self, capacity_percent: int) -> None:
         await self.link.request(MESSAGE_BATTERY, build_phone_battery_status(capacity_percent))
@@ -429,4 +508,5 @@ class GarminClient:
             "authentication": self.auth.state.phase.value if self.auth is not None else "not_configured",
             "secure_session": self.session_key is not None,
             "file_transfer_active": bool(self.file_transfer and self.file_transfer.active),
+            "feature_capabilities": self.feature_capabilities is not None,
         }

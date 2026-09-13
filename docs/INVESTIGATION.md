@@ -18,7 +18,7 @@ Android/BlueZ BLE
   -> GFDI frame + CRC-16
   -> optional XXTEA secure-session wrapper
   -> request/response dispatcher
-  -> device/config/battery/time/file/GNCS handlers
+  -> device/config/battery/time/file/GNCS + Smart protobuf handlers
 ```
 
 Static evidence indicates Garmin Connect requests ATT MTU 515 and treats notification boundaries as arbitrary stream chunks rather than protocol packet boundaries.

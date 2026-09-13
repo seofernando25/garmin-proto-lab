@@ -10,7 +10,7 @@ Independent interoperability research and a clean-room Python reference implemen
 - Garmin service/characteristic selection and ATT stream chunking
 - COBS framing, GFDI frames, CRC-16, request/response correlation
 - XXTEA authentication, pairing/session state, LTK reconnect, secure-session wrapping
-- device information, configuration, battery, and time synchronization
+- device information, configuration, battery, time, and Smart protobuf feature capabilities
 - GNCS notification subscription/source/control-point/data-source codecs
 - file directory discovery, file download, retry/integrity state, and basic FIT inspection
 - semantic client API and `garmin-proto` CLI

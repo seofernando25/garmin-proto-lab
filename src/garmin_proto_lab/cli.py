@@ -208,7 +208,7 @@ async def _workflow(args: argparse.Namespace) -> int:
     )
     client = GarminClient(
         link,
-        HostIdentity(args.client_version, args.client_name, "OpenAI interoperability lab", "Python GFDI client"),
+        HostIdentity(args.client_version, args.client_name, "Independent interoperability lab", "Python GFDI client"),
         # Static managers used by this reference client: GNCS smart notifications
         # requires config bit 6 and the current-time request path uses bit 71.
         frozenset({6, 71}),
@@ -236,6 +236,27 @@ async def _workflow(args: argparse.Namespace) -> int:
             )
             if auth.state.phase is SessionPhase.FAILED:
                 raise RuntimeError("watch authentication failed")
+
+        peer_configuration = client.peer_configuration
+        if (
+            not args.skip_feature_capabilities
+            and peer_configuration is not None
+            and 95 in peer_configuration.effective_flags()
+        ):
+            capabilities = await client.refresh_feature_capabilities(gncs_version=args.gncs_version)
+            print(
+                json.dumps(
+                    {
+                        "feature_capabilities": {
+                            "guid_status": int(capabilities.guid_status) if capabilities.guid_status is not None else None,
+                            "version": capabilities.version,
+                            "gncs_nc_version": capabilities.gncs.nc_version if capabilities.gncs else None,
+                            "gncs_support_blocked_apps": capabilities.gncs.support_blocked_apps if capabilities.gncs else None,
+                        }
+                    },
+                    indent=2,
+                )
+            )
 
         if not args.skip_battery:
             await client.send_phone_battery(args.battery_percent)
@@ -345,6 +366,8 @@ def build_parser() -> argparse.ArgumentParser:
     workflow.add_argument("--timeout", type=float, default=45.0)
     workflow.add_argument("--battery-percent", type=int, default=100)
     workflow.add_argument("--skip-battery", action="store_true")
+    workflow.add_argument("--skip-feature-capabilities", action="store_true")
+    workflow.add_argument("--gncs-version", default="0.1.0", help="independent GNCS semantic version advertised to capable watches")
     workflow.add_argument("--skip-time", action="store_true")
     workflow.add_argument("--skip-files", action="store_true")
     workflow.add_argument("--download-first-activity", action="store_true")

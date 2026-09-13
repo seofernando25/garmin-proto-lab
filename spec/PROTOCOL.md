@@ -747,6 +747,60 @@ When the GNCS notification sender has no session key, P-0503 bytes are sent dire
 
 ---
 
+## Layer 8 — GDI Smart protobuf transport
+
+### P-0600 — Protobuf chunk transport 5043/5044/5045 (`SUPPORTED`, S-0018; T-0061)
+
+Messages 5043 (request) and 5044 (response) carry serialized protobuf bytes in independently acknowledged chunks:
+
+```text
+0..1    request ID, uint16 LE
+2..5    data offset, uint32 LE
+6..9    total serialized length, uint32 LE
+10..13  chunk length, uint32 LE
+14..    chunk bytes
+```
+
+Maximum chunk data is `current GFDI payload limit - 14`. The eight-byte GFDI acknowledgement payload is `requestId:u16LE | offset:u32LE | failed:u8 | status:u8`. Status values are no-error 0, unknown request 100, duplicate packet 101, missing packet 102, exceeded protobuf length 103, parse error 200, and unknown protobuf message 201. Duplicate is transport-success; missing/length/parse/unknown are failures.
+
+Message 5045 carries the uint16 request ID. It cancels pending response state and is acknowledged by echoing the request ID. A failed/cancelled host request sends 5045 best-effort.
+
+### P-0601 — Smart extension envelope (`SUPPORTED`, S-0018; T-0062)
+
+`GDI.Proto.Smart.Smart` contains no ordinary fields. Its payload consists of protobuf extension fields. For the v1 workflows:
+
+- Smart field 13: Core service.
+- Smart field 49: GNCS service traffic.
+
+The compatibility runtime parses standard protobuf wire types with finite field and length bounds and preserves unknown fields numerically. It does not load Garmin generated protobuf classes.
+
+### P-0602 — Core feature-capability exchange (`SUPPORTED`, S-0018; T-0062/T-0063)
+
+Within Core service, field 8 is Feature Capabilities Request, field 9 is Feature Capabilities Response, and field 14 is Connection Ready Notification. The static GFDI startup path performs the capability request only when the peer legacy Configuration contains flag 95.
+
+Feature Capabilities Request has optional `garmin_guid:bytes=1`, `client_version:uint32=2`, and `display_name:string=3`; the independent client leaves these unset unless a future target proves they are required. Response fields are `guid_status=1` (UNSET=0, MATCH=1, NO_MATCH=2) and `version:uint32=2`.
+
+### P-0603 — GNCS protobuf capabilities (`SUPPORTED`, S-0018; T-0062/T-0063)
+
+GNCS is a message-scoped extension field 12 inside Core Feature Capabilities. Request fields are:
+
+```text
+1  np_version:uint32
+2  notification_disabled_reason:enum (optional)
+3  default_messaging_app_id:string
+4  default_dialer_app_id:string
+```
+
+Disabled reasons are 1 low-RAM/mobile-disabled, 2 permission-not-granted, 3 service-not-bound. Semantic version `A.B.C` becomes `(A<<16)|(B<<8)|C`. The reference client advertises its own version and does not reuse Garmin's build version.
+
+Response fields are `nc_version:uint32=1` and `support_blocked_apps:bool=2`. Static Garmin behavior treats `nc_version >= 1` as support for modified-after-added notification semantics and exposes the blocked-app capability when field 2 is true.
+
+### P-0604 — Connection-ready notification (`SUPPORTED`, S-0018; T-0063)
+
+Core field 14 is an empty Connection Ready Notification carried in an incoming Smart protobuf request. It is treated as a handled notification, not as a reason to fabricate a semantic protobuf response. Feature handlers are notified after it arrives. Exact timing relative to authentication and notification subscription remains a target-watch observation.
+
+---
+
 ## Message-family census
 
 Current names recovered from the app's own message-name mapping:
@@ -868,6 +922,9 @@ Current local tests are offline/static-proof tests and are not substitutes for t
 | T-0053 | action/dismissal/control-point codecs | P-0505 |
 | T-0054 | GNCS optional XXTEA + control-point semantic ACK/decrypt | P-0504/P-0506 |
 | T-0060 | `tests/test_client.py` handshake/time/sync/GNCS orchestration | P-0301..P-0506 |
+| T-0061 | `tests/test_protobuf_transport.py` + `tests/test_protobuf_link.py` chunk/reassembly/cancel/error simulation | P-0600 |
+| T-0062 | `tests/test_protobuf_wire.py` bounded wire/envelope/capability vectors | P-0601..P-0603 |
+| T-0063 | `tests/test_client_protobuf.py` semantic capability gating + connection-ready handling | P-0602..P-0604 |
 
 ## Current blockers
 
