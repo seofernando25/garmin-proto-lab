@@ -5,6 +5,8 @@ from uuid import UUID
 import pytest
 
 from garmin_proto_lab.file_access_proto import (
+    CancelTransferRequest,
+    CancelTransferStatus,
     ChecksumMethod,
     DataTypeFormat,
     FileAccessCapabilities,
@@ -22,12 +24,14 @@ from garmin_proto_lab.file_access_proto import (
     MlrPipeDirection,
     TransferDirection,
     TransportProtocol,
+    build_cancel_transfer_smart,
     build_file_access_smart,
     build_item_list_smart,
     build_pull_item_smart,
     build_service_message,
     build_transfer_status_smart_response,
     encode_uuid,
+    parse_cancel_transfer_smart_response,
     parse_item_list_smart_response,
     parse_pull_item_smart_response,
     parse_transfer_status_smart_request,
@@ -204,3 +208,18 @@ def test_transfer_status_request_and_response_wire() -> None:
     empty = build_transfer_status_smart_response()
     empty_service = last_bytes(parse_fields(empty), 43)
     assert last_bytes(parse_fields(empty_service or b""), 21) == b""
+
+
+def test_cancel_transfer_request_response_wire() -> None:
+    smart = build_cancel_transfer_smart(CancelTransferRequest(0x12345678))
+    service = last_bytes(parse_fields(smart), 43)
+    body = last_bytes(parse_fields(service or b""), 18)
+    assert body is not None
+    assert last_varint(parse_fields(body), 1) == 0x12345678
+
+    success = build_file_access_smart(build_service_message(19, encode_uint(1, 0)))
+    assert parse_cancel_transfer_smart_response(success).status is CancelTransferStatus.SUCCESS
+    unknown = build_file_access_smart(build_service_message(19, encode_uint(1, 1)))
+    assert parse_cancel_transfer_smart_response(unknown).status is CancelTransferStatus.UNKNOWN_TRANSFER
+    with pytest.raises(ValueError, match="uint32"):
+        CancelTransferRequest(1 << 32).encode()

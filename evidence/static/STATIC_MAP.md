@@ -276,6 +276,7 @@ Static protobuf descriptors plus `com/garmin/device/filetransfer/C11219a.java` /
 - Item List request/response are service fields 9/10. Filters cover transaction/session IDs, flag UUIDs, included data types and modified-time metadata. Session IDs page a single listing; `next_transaction_id` supports later incremental listings.
 - Pull request/response are fields 1/2. The only recovered transport enum is MultiLink Transport Pipe (0). A successful pull returns a transfer handle and optionally a compression window.
 - Transfer Status request/response are fields 5/21. Completion is device-initiated: the host associates the request with the active transfer handle and replies only after the data path finishes. Unknown handles get an empty response.
+- Cancel Transfer request/response are fields 18/19. Request field 1 is the transfer handle; SUCCESS and UNKNOWN_TRANSFER are both treated as successful/idempotent cleanup by Garmin's client.
 - The higher upload/sync layer explicitly includes `FIT_TYPE_4` (activity), `FIT_TYPE_32` (monitoring) and `FIT_TYPE_49` (sleep) among recovered fitness-oriented data-type names. This is a filter/classification fact, not a guarantee that every watch exposes each type.
 
 The independent runtime models the protobuf messages, pagination, pull negotiation and delayed transfer-status response without importing Garmin generated protobuf code.
@@ -289,6 +290,6 @@ Static Java plus targeted local analysis of the x86_64 `libreliable-ml.so` split
 - FileAccess transport-pipe service IDs are `0x2018,0x4018,0x6018,0x8018,0xA018,0xC018,0xE018`. The pipe configure blob is `00 | direction:u8 | transferHandle:u64LE`, where direction is 0 read and 1 write.
 - Non-reliable MultiLink packets use a one-byte handle. Reliable MLR packets use two header bytes. For handle `0x80..0x87`, six-bit request number RN and six-bit sequence number SN: `b0=0x80|((handle&7)<<4)|(RN>>2)`, `b1=((RN&3)<<6)|SN`; payload capacity is `max_write_length-2`. RN is a cumulative ACK.
 - Four native self-test vectors were recovered and are used as independent codec test vectors: `05 01`, `d0 c2 ff`, `92 cd ff de a2`, `ff ff 01 02 03`.
-- Garmin's native engine has adaptive send-window/RTO/deferred-ACK behavior. The independent implementation does **not** clone unverified timer policy: current bring-up uses bounded outstanding packets and immediate cumulative ACKs, with uncompressed FileAccess reads first.
+- Garmin's native engine has adaptive send-window/RTO/deferred-ACK behavior. The independent implementation does **not** clone unverified timer policy: current bring-up uses bounded outstanding packets and immediate cumulative ACKs. FileAccess reads default to uncompressed; optional compression uses standard zlib because the recovered read sink is Java `Inflater()`/`InflaterOutputStream`.
 
 Primary evidence is `vi2/C48927c0.java`, `C48939k.java`, `C48946r.java`, `wi2/C50817d.java`, `ui2/C47398e.java`, `MLRConnectionHelper.java`, and local decompilation of exported `mlr_format_*` / `MLR_reliable_*` functions. No native binary or decompiled Garmin source is committed.

@@ -38,8 +38,12 @@ In another terminal, progress from least invasive to full workflow:
 uv run garmin-proto scan --seconds 8
 uv run garmin-proto services <address>
 uv run garmin-proto probe <address>
+uv run garmin-proto pair <address>
 uv run garmin-proto workflow <address>
 uv run garmin-proto workflow <address> --download-first-activity
+# Only after flag 90/FileAccess is observed:
+uv run garmin-proto workflow <address> --next-gen-files --skip-files
+uv run garmin-proto workflow <address> --download-first-next-gen-fitness --skip-files
 ```
 
 Stop `btmon` after the single intended experiment. Use a new capture for each state transition instead of recording a long mixed session.

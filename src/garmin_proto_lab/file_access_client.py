@@ -7,10 +7,13 @@ conservative immediate-ACK MLR policy; hardware verification is still required.
 from __future__ import annotations
 
 import asyncio
+import zlib
 from dataclasses import dataclass
 from uuid import UUID
 
 from .file_access_proto import (
+    CancelTransferRequest,
+    CancelTransferStatus,
     FileDataType,
     FileItemReference,
     ItemAccessResult,
@@ -25,9 +28,11 @@ from .file_access_proto import (
     TransferStatusRequest,
     TransferStatusResponse,
     TransportProtocol,
+    build_cancel_transfer_smart,
     build_item_list_smart,
     build_pull_item_smart,
     build_transfer_status_smart_response,
+    parse_cancel_transfer_smart_response,
     parse_item_list_smart_response,
     parse_pull_item_smart_response,
     parse_transfer_status_smart_request,
@@ -206,6 +211,19 @@ class FileAccessControlClient:
             waiter.cancel()
         self._pending_status.pop(transfer_handle, None)
 
+    def pending_transfer_status(self, transfer_handle: int) -> IncomingTransferStatus | None:
+        return self._pending_status.get(transfer_handle)
+
+    async def cancel_transfer(self, transfer_handle: int) -> CancelTransferStatus:
+        response = parse_cancel_transfer_smart_response(
+            await self.protobuf.request(build_cancel_transfer_smart(CancelTransferRequest(transfer_handle)))
+        )
+        if response.status is None:
+            raise FileAccessControlError("FileAccess cancel response is missing status")
+        if response.status in (CancelTransferStatus.SUCCESS, CancelTransferStatus.UNKNOWN_TRANSFER):
+            return response.status
+        raise FileAccessControlError(f"FileAccess cancel failed with status {int(response.status)}")
+
     async def handle_incoming(self, request_id: int, serialized_smart: bytes):
         """Handle device-initiated FileAccess transfer-status requests.
 
@@ -259,7 +277,11 @@ class FileAccessControlClient:
 
 
 class FileAccessMlrDownloader:
-    """Experimental uncompressed FileAccess pull over clean-room MultiLink/MLR."""
+    """Experimental FileAccess pull over clean-room MultiLink/MLR.
+
+    Uncompressed transfer remains the default. Optional compression uses the
+    standard zlib stream implied by Garmin's ``Inflater`` read-side wrapper.
+    """
 
     def __init__(
         self,
@@ -280,12 +302,24 @@ class FileAccessMlrDownloader:
         self.status_timeout = status_timeout
         self.configure_retries = configure_retries
 
+    @staticmethod
+    def _raise_peer_failure(request: TransferStatusRequest) -> None:
+        details = [f"reason={int(request.failure_reason)}"]
+        if request.transport_provider_id is not None:
+            details.append(f"provider={request.transport_provider_id}")
+        if request.transport_status is not None:
+            details.append(f"status={request.transport_status}")
+        if request.transport_error_code is not None:
+            details.append(f"code={request.transport_error_code}")
+        raise FileAccessTransferError("device reported FileAccess transfer failure: " + ", ".join(details))
+
     async def download(
         self,
         item: FileItemReference,
         *,
         priority: int = int(TransferPriorityLevel.STANDARD_START),
         offset: int = 0,
+        request_compression: bool = False,
     ) -> FileAccessDownload:
         if item.data_size is None:
             raise FileAccessTransferError("FileAccess pull requires known item size")
@@ -296,13 +330,15 @@ class FileAccessMlrDownloader:
             item,
             priority=priority,
             offset=offset,
-            request_compression=False,
+            request_compression=request_compression,
         )
         transfer_handle = negotiation.transfer_handle
         self.control.track_transfer(transfer_handle)
         service: MultiLinkService | None = None
         status: IncomingTransferStatus | None = None
         data = bytearray()
+        decompressor = zlib.decompressobj() if negotiation.response.compression_window is not None else None
+        completed = False
         try:
             service = await self.multilink.open_file_transfer_service()
             session = ReliableMlrSession(service.handle, self.multilink.max_write_length)
@@ -312,11 +348,19 @@ class FileAccessMlrDownloader:
 
             configured = False
             retries = self.configure_retries
-            while not configured or len(data) < expected:
+            while (
+                not configured
+                or len(data) < expected
+                or (decompressor is not None and not decompressor.eof)
+            ):
                 timeout = self.configure_timeout if not configured else self.data_timeout
                 try:
                     raw = await self.multilink.recv_raw(service.handle, timeout=timeout)
                 except MultiLinkClientError:
+                    pending = self.control.pending_transfer_status(transfer_handle)
+                    if pending is not None and pending.request.failure_reason is not None:
+                        await self.control.respond_transfer_status(pending)
+                        self._raise_peer_failure(pending.request)
                     if not configured and retries > 0 and session.outstanding_count:
                         retries -= 1
                         for packet in session.retransmit_outstanding():
@@ -337,10 +381,34 @@ class FileAccessMlrDownloader:
                         )
                     configured = True
                     continue
-                data.extend(result.data)
+                if decompressor is None:
+                    data.extend(result.data)
+                else:
+                    try:
+                        data.extend(decompressor.decompress(result.data))
+                    except zlib.error as exc:
+                        raise FileAccessTransferError("FileAccess zlib decompression failed") from exc
+                    if decompressor.unused_data:
+                        raise FileAccessTransferError("FileAccess compressed transfer contained trailing data")
+                    if decompressor.eof and len(data) < expected:
+                        raise FileAccessTransferError(
+                            f"FileAccess compressed stream ended at {len(data)} of {expected} bytes"
+                        )
                 if len(data) > expected:
                     raise FileAccessTransferError(
                         f"FileAccess transfer exceeded expected size {expected}"
+                    )
+
+            if decompressor is not None:
+                try:
+                    data.extend(decompressor.flush())
+                except zlib.error as exc:
+                    raise FileAccessTransferError("FileAccess zlib finalization failed") from exc
+                if not decompressor.eof:
+                    raise FileAccessTransferError("FileAccess compressed stream ended before zlib end marker")
+                if len(data) != expected:
+                    raise FileAccessTransferError(
+                        f"FileAccess decompressed size {len(data)} does not match expected {expected}"
                     )
 
             status = await self.control.wait_transfer_status(transfer_handle, timeout=self.status_timeout)
@@ -349,17 +417,24 @@ class FileAccessMlrDownloader:
             await self.control.respond_transfer_status(status)
             request = status.request
             if request.failure_reason is not None:
-                details = [f"reason={int(request.failure_reason)}"]
-                if request.transport_provider_id is not None:
-                    details.append(f"provider={request.transport_provider_id}")
-                if request.transport_status is not None:
-                    details.append(f"status={request.transport_status}")
-                if request.transport_error_code is not None:
-                    details.append(f"code={request.transport_error_code}")
-                raise FileAccessTransferError("device reported FileAccess transfer failure: " + ", ".join(details))
+                self._raise_peer_failure(request)
 
+            completed = True
             assert service is not None
             return FileAccessDownload(item, negotiation, service, bytes(data), request)
+        except BaseException:
+            pending = self.control.pending_transfer_status(transfer_handle)
+            if pending is not None:
+                try:
+                    await self.control.respond_transfer_status(pending)
+                except Exception:
+                    pass
+            if not completed:
+                try:
+                    await self.control.cancel_transfer(transfer_handle)
+                except Exception:
+                    pass
+            raise
         finally:
             if service is not None:
                 try:

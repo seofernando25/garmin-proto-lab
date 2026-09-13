@@ -146,6 +146,11 @@ class TransferFailureReason(IntEnum):
     COMPRESSION_FAILED = 5
 
 
+class CancelTransferStatus(IntEnum):
+    SUCCESS = 0
+    UNKNOWN_TRANSFER = 1
+
+
 def _enum(enum_type, value: int | None):
     if value is None:
         return None
@@ -496,6 +501,27 @@ class TransferStatusResponse:
 
 
 @dataclass(frozen=True, slots=True)
+class CancelTransferRequest:
+    transfer_handle: int
+
+    def encode(self) -> bytes:
+        if not 0 <= self.transfer_handle <= 0xFFFFFFFF:
+            raise ValueError("transfer_handle must fit uint32")
+        return encode_uint(1, self.transfer_handle)
+
+
+@dataclass(frozen=True, slots=True)
+class CancelTransferResponse:
+    status: CancelTransferStatus | int | None
+    raw_fields: tuple[WireField, ...] = ()
+
+    @classmethod
+    def parse(cls, data: bytes) -> "CancelTransferResponse":
+        fields = parse_fields(data)
+        return cls(_enum(CancelTransferStatus, last_varint(fields, 1)), fields)
+
+
+@dataclass(frozen=True, slots=True)
 class GetItemChecksumResponse:
     uid: UUID | None
     result: int | None
@@ -564,6 +590,17 @@ def parse_transfer_status_smart_request(smart_bytes: bytes) -> TransferStatusReq
 def build_transfer_status_smart_response(response: TransferStatusResponse | None = None) -> bytes:
     payload = (response or TransferStatusResponse()).encode()
     return build_file_access_smart(build_service_message(SERVICE_TRANSFER_STATUS_RESPONSE, payload))
+
+
+def build_cancel_transfer_smart(request: CancelTransferRequest) -> bytes:
+    return build_file_access_smart(build_service_message(SERVICE_CANCEL_TRANSFER_REQUEST, request.encode()))
+
+
+def parse_cancel_transfer_smart_response(smart_bytes: bytes) -> CancelTransferResponse:
+    raw = service_message(smart_bytes, SERVICE_CANCEL_TRANSFER_RESPONSE)
+    if raw is None:
+        raise ProtobufWireError("FileAccess service has no cancel-transfer response")
+    return CancelTransferResponse.parse(raw)
 
 
 @dataclass(frozen=True, slots=True)

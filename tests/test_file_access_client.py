@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import zlib
 from uuid import UUID
 
 import pytest
@@ -9,8 +10,10 @@ from garmin_proto_lab.file_access_client import (
     FileAccessControlClient,
     FileAccessControlError,
     FileAccessMlrDownloader,
+    FileAccessTransferError,
 )
 from garmin_proto_lab.file_access_proto import (
+    CancelTransferStatus,
     DataTypeFormat,
     FileDataType,
     FileItemReference,
@@ -22,7 +25,7 @@ from garmin_proto_lab.file_access_proto import (
     build_service_message,
 )
 from garmin_proto_lab.mlr import MlrPacket
-from garmin_proto_lab.multilink_client import MultiLinkService
+from garmin_proto_lab.multilink_client import MultiLinkClientError, MultiLinkService
 from garmin_proto_lab.protobuf_wire import encode_message, encode_string, encode_uint, last_bytes, last_varint, parse_fields
 
 
@@ -63,6 +66,11 @@ def _pull_response(*, result=0, transport=0, handle=1, compression=15) -> bytes:
         body += encode_uint(7, compression)
     return build_file_access_smart(build_service_message(2, bytes(body)))
 
+
+
+
+def _cancel_response(status: int) -> bytes:
+    return build_file_access_smart(build_service_message(19, encode_uint(1, status)))
 
 def test_item_list_paginates_with_session_only_after_first_request() -> None:
     async def run() -> None:
@@ -164,6 +172,21 @@ def test_transfer_status_handler_delays_known_transfer_and_answers_unknown() -> 
     asyncio.run(run())
 
 
+def test_cancel_transfer_is_idempotent_for_unknown_handle() -> None:
+    async def run() -> None:
+        proto = FakeProtobuf([_cancel_response(0), _cancel_response(1), _cancel_response(7)])
+        client = FileAccessControlClient(proto)  # type: ignore[arg-type]
+        assert await client.cancel_transfer(55) is CancelTransferStatus.SUCCESS
+        assert await client.cancel_transfer(55) is CancelTransferStatus.UNKNOWN_TRANSFER
+        with pytest.raises(FileAccessControlError, match="status 7"):
+            await client.cancel_transfer(55)
+        service = last_bytes(parse_fields(proto.requests[0]), 43)
+        body = last_bytes(parse_fields(service or b""), 18)
+        assert last_varint(parse_fields(body or b""), 1) == 55
+
+    asyncio.run(run())
+
+
 class FakeMultiLink:
     def __init__(self, control: FileAccessControlClient, transfer_handle: int, file_data: bytes) -> None:
         self.control = control
@@ -217,5 +240,53 @@ def test_uncompressed_file_access_mlr_download_end_to_end_offline() -> None:
         assert first.reliable is True
         assert first.handle == 0x80
         assert first.payload == b"\x00\x00" + transfer_handle.to_bytes(8, "little")
+
+    asyncio.run(run())
+
+
+class FailingMultiLink(FakeMultiLink):
+    async def recv_raw(self, handle: int, *, timeout: float | None = None) -> bytes:
+        self._recv_count += 1
+        if self._recv_count == 1:
+            return MlrPacket(0x80, b"\x00\x00\x00", True, 0, 1).encode()
+        raise MultiLinkClientError("simulated transport timeout")
+
+
+def test_download_failure_best_effort_cancels_file_access_transfer() -> None:
+    async def run() -> None:
+        transfer_handle = 321
+        item = FileItemReference(UUID(int=10), None, 8)
+        proto = FakeProtobuf([
+            _pull_response(handle=transfer_handle, compression=None),
+            _cancel_response(CancelTransferStatus.SUCCESS),
+        ])
+        control = FileAccessControlClient(proto)  # type: ignore[arg-type]
+        multilink = FailingMultiLink(control, transfer_handle, b"")
+        downloader = FileAccessMlrDownloader(control, multilink, configure_retries=0)  # type: ignore[arg-type]
+        with pytest.raises(MultiLinkClientError, match="simulated"):
+            await downloader.download(item)
+        assert multilink.closed == [(0x2018, 0x80)]
+        cancel_service = last_bytes(parse_fields(proto.requests[-1]), 43)
+        cancel_body = last_bytes(parse_fields(cancel_service or b""), 18)
+        assert last_varint(parse_fields(cancel_body or b""), 1) == transfer_handle
+
+    asyncio.run(run())
+
+
+def test_compressed_file_access_mlr_download_uses_standard_zlib_stream() -> None:
+    async def run() -> None:
+        transfer_handle = 456
+        clear = b"FIT-DATA-COMPRESSED"
+        compressed = zlib.compress(clear)
+        item = FileItemReference(UUID(int=11), None, len(clear))
+        proto = FakeProtobuf([_pull_response(handle=transfer_handle, compression=15)])
+        control = FileAccessControlClient(proto)  # type: ignore[arg-type]
+        multilink = FakeMultiLink(control, transfer_handle, compressed)
+        downloader = FileAccessMlrDownloader(control, multilink)  # type: ignore[arg-type]
+        result = await downloader.download(item, request_compression=True)
+        assert result.data == clear
+        pull_service = last_bytes(parse_fields(proto.requests[0]), 43)
+        pull_body = last_bytes(parse_fields(pull_service or b""), 1)
+        assert last_varint(parse_fields(pull_body or b""), 5) == 15
 
     asyncio.run(run())

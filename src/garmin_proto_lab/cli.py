@@ -17,9 +17,13 @@ from .bleak_backend import BleakBackend, BleakUnavailable
 from .client import GarminClient
 from .codec import DecodeProblem, DecodedPacket, GfdiWireCodec
 from .device_settings import build_legacy_time_settings, build_time_updated_event
+from .file_access_client import FileAccessMlrDownloader
+from .fit import inspect_fit, is_activity_or_health_data_type_name
 from .frame import Frame
 from .handshake import HostIdentity
 from .link import GfdiMessageLink
+from .multilink import DEFAULT_INDEPENDENT_CLIENT_ID
+from .multilink_client import MultiLinkClient
 from .session import FilePairingStore, SessionPhase
 from .transport import BleTransport, DiscoveredDevice, candidate_score
 
@@ -195,8 +199,54 @@ async def _wait_until(predicate, timeout: float, description: str) -> None:
         await asyncio.sleep(0.05)
 
 
+async def _pair_only(args: argparse.Namespace) -> int:
+    """Run only BLE bond + GFDI handshake/authentication and persist the LTK."""
+    backend = BleakBackend(assume_bonded=args.assume_bonded)
+    transport = BleTransport(backend, require_bond=not args.no_bond)
+    link = GfdiMessageLink(transport, request_timeout=args.timeout)
+    store = FilePairingStore(args.pairing_store)
+    auth = AuthProtocolEngine(
+        link,
+        args.address,
+        store,
+        passkey_provider=_prompt_passkey,
+    )
+    client = GarminClient(
+        link,
+        HostIdentity(args.client_version, args.client_name, "Independent interoperability lab", "Python GFDI client"),
+        frozenset({6, 71}),
+        auth=auth,
+    )
+    try:
+        await client.connect(DiscoveredDevice(args.address))
+        await _wait_until(lambda: client.handshake.complete, args.timeout, "GFDI handshake")
+        await _wait_until(
+            lambda: auth.state.phase in (SessionPhase.ESTABLISHED, SessionPhase.FAILED),
+            args.timeout,
+            "authentication",
+        )
+        if auth.state.phase is SessionPhase.FAILED:
+            raise RuntimeError("watch authentication failed")
+        print(json.dumps({
+            "status": "paired",
+            "secure_session": client.session_key is not None,
+            "persistent_pairing_record": store.load(args.address) is not None,
+        }, indent=2))
+        return 0
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
 async def _workflow(args: argparse.Namespace) -> int:
     backend = BleakBackend(assume_bonded=args.assume_bonded)
+    next_gen_requested = bool(
+        args.enable_next_gen_file_access
+        or args.next_gen_files
+        or args.download_first_next_gen_fitness
+    )
     transport = BleTransport(backend, require_bond=not args.no_bond)
     link = GfdiMessageLink(transport, request_timeout=args.timeout)
     store = FilePairingStore(args.pairing_store)
@@ -212,7 +262,7 @@ async def _workflow(args: argparse.Namespace) -> int:
         # Static managers used by this reference client: GNCS uses bit 6 and
         # current-time request mode uses bit 71. Next-gen FileAccess (bit 90)
         # remains explicit opt-in until its MultiLink data plane is verified.
-        frozenset({6, 71} | ({90} if args.enable_next_gen_file_access else set())),
+        frozenset({6, 71} | ({90} if next_gen_requested else set())),
         auth=auth,
     )
 
@@ -273,6 +323,70 @@ async def _workflow(args: argparse.Namespace) -> int:
                     indent=2,
                 )
             )
+
+        if args.next_gen_files or args.download_first_next_gen_fitness:
+            if client.file_access_control is None:
+                raise RuntimeError("FileAccess control client is unavailable")
+            if client.file_access_capabilities is None:
+                raise RuntimeError(
+                    "next-gen files requested but the watch did not advertise FileAccess capabilities"
+                )
+            listing = await client.file_access_control.list_items()
+            named = list(zip(listing.items, listing.data_type_names, strict=False))
+            candidates = [
+                (item, name)
+                for item, name in named
+                if is_activity_or_health_data_type_name(name)
+            ]
+            print(
+                json.dumps(
+                    {
+                        "next_gen_activity_health_candidates": [
+                            {
+                                "data_type": name,
+                                "size": item.data_size,
+                                "urgency": int(item.urgency) if item.urgency is not None else None,
+                            }
+                            for item, name in candidates
+                        ],
+                        "next_transaction_id": listing.next_transaction_id,
+                    },
+                    indent=2,
+                )
+            )
+            if args.download_first_next_gen_fitness and candidates:
+                multilink = MultiLinkClient(
+                    backend,
+                    transport.services,
+                    args.multilink_client_id,
+                    transport.write_payload_size,
+                    timeout=min(args.timeout, 10.0),
+                )
+                await multilink.initialize()
+                downloaded = await FileAccessMlrDownloader(
+                    client.file_access_control,
+                    multilink,
+                    configure_timeout=min(args.timeout, 10.0),
+                    data_timeout=args.timeout,
+                    status_timeout=args.timeout,
+                ).download(
+                    candidates[0][0],
+                    request_compression=args.next_gen_compression,
+                )
+                fit = inspect_fit(downloaded.data)
+                print(
+                    json.dumps(
+                        {
+                            "next_gen_download": {
+                                "bytes": len(downloaded.data),
+                                "fit_type": int(fit.file_type_raw) if fit.file_type_raw is not None else None,
+                                "multilink_service": downloaded.service.service_id,
+                                "multilink_handle": downloaded.service.handle,
+                            }
+                        },
+                        indent=2,
+                    )
+                )
 
         if not args.skip_battery:
             await client.send_phone_battery(args.battery_percent)
@@ -374,6 +488,16 @@ def build_parser() -> argparse.ArgumentParser:
     probe.add_argument("--show-address", action="store_true")
     probe.set_defaults(func=lambda args: _run_hardware(_probe(args)))
 
+    pair = sub.add_parser("pair", help="run only BLE bond + GFDI authentication and persist pairing material")
+    pair.add_argument("address")
+    pair.add_argument("--pairing-store", default=str(Path.home() / ".local" / "share" / "garmin-proto" / "pairing.json"))
+    pair.add_argument("--client-version", type=int, default=1)
+    pair.add_argument("--client-name", default="Independent Garmin Client")
+    pair.add_argument("--timeout", type=float, default=45.0)
+    pair.add_argument("--no-bond", action="store_true")
+    pair.add_argument("--assume-bonded", action="store_true")
+    pair.set_defaults(func=lambda args: _run_hardware(_pair_only(args)))
+
     workflow = sub.add_parser("workflow", help="run the independent handshake/auth/time/file workflow on a watch")
     workflow.add_argument("address")
     workflow.add_argument("--pairing-store", default=str(Path.home() / ".local" / "share" / "garmin-proto" / "pairing.json"))
@@ -383,7 +507,16 @@ def build_parser() -> argparse.ArgumentParser:
     workflow.add_argument("--battery-percent", type=int, default=100)
     workflow.add_argument("--skip-battery", action="store_true")
     workflow.add_argument("--skip-feature-capabilities", action="store_true")
-    workflow.add_argument("--enable-next-gen-file-access", action="store_true", help="advertise statically reconstructed FileAccess config bit 90; control plane only")
+    workflow.add_argument("--enable-next-gen-file-access", action="store_true", help="advertise statically reconstructed FileAccess config bit 90")
+    workflow.add_argument("--next-gen-files", action="store_true", help="list activity/health items through experimental FileAccess protobuf")
+    workflow.add_argument("--download-first-next-gen-fitness", action="store_true", help="download the first next-gen activity/health item over experimental MultiLink/MLR")
+    workflow.add_argument("--next-gen-compression", action="store_true", help="request statically reconstructed zlib compression for next-gen pull")
+    workflow.add_argument(
+        "--multilink-client-id",
+        type=lambda value: int(value, 0),
+        default=DEFAULT_INDEPENDENT_CLIENT_ID,
+        help="stable nonzero application-defined MultiLink client ID (default wire bytes: GPLAB001)",
+    )
     workflow.add_argument("--gncs-version", default="0.1.0", help="independent GNCS semantic version advertised to capable watches")
     workflow.add_argument("--skip-time", action="store_true")
     workflow.add_argument("--skip-files", action="store_true")

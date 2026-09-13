@@ -74,7 +74,7 @@ listing = await control.list_items()
 download = await FileAccessMlrDownloader(control, ml).download(listing.items[0])
 ```
 
-`connection_id` is the independent application's stable MultiLink identity. Do not copy Garmin Connect's private configured value. This path is offline-tested but remains experimental until a target watch validates service registration, reliable timing and recovery.
+`connection_id` is the independent application's stable MultiLink identity. The CLI default is project-defined wire text `GPLAB001`; it is not a Garmin identifier. Pulls default to uncompressed data, with optional standard-zlib decompression when requested. Local transfer failure sends best-effort FileAccess Cancel Transfer before cleanup. This path is offline-tested but remains experimental until a target watch validates service registration, reliable timing and recovery.
 
 ## Hardware workflow
 
@@ -84,6 +84,7 @@ The reference CLI exercises the same API:
 uv run garmin-proto scan --seconds 8
 uv run garmin-proto services <address>
 uv run garmin-proto probe <address>
+uv run garmin-proto pair <address>
 uv run garmin-proto workflow <address> --download-first-activity
 ```
 

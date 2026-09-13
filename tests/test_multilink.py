@@ -5,6 +5,7 @@ from uuid import UUID
 import pytest
 
 from garmin_proto_lab.multilink import (
+    DEFAULT_INDEPENDENT_CLIENT_ID,
     FILE_TRANSFER_PIPE_SERVICE_IDS,
     MULTILINK_PRIMARY_CHARACTERISTICS,
     MULTILINK_PAIRED_CHARACTERISTICS,
@@ -79,3 +80,7 @@ def test_multilink_parser_rejects_short_or_non_control_messages() -> None:
         parse_control_message(b"\x80\x00")
     with pytest.raises(MultiLinkError):
         RegisterServiceResponse.parse(b"\x00\x01")
+
+
+def test_independent_default_client_id_is_traceable_and_not_garmin_recovered() -> None:
+    assert DEFAULT_INDEPENDENT_CLIENT_ID.to_bytes(8, "little") == b"GPLAB001"

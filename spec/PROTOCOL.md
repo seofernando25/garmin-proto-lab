@@ -817,7 +817,7 @@ Legacy configuration flag 90 enables the next-generation FileAccess manager. Sma
 
 Item List request/response are service fields 9/10. The first request can carry transaction ID, maximum count, excluded/requested flag UUIDs, included data types and requested metadata. A response session ID pages the same listing; a terminal response omits session ID and may include `next_transaction_id`. GDXML data-type strings can be sent once with a numeric string key and referenced by that key in later items/pages; the runtime keeps that table across a listing transaction. Pull request/response are fields 1/2 and select transport enum 0 (`MULTILINK_TRANSPORT_PIPE`).
 
-Transfer Status request/response are fields 5/21. The device sends status for the negotiated transfer handle. A request with `failure_reason` indicates transfer failure; otherwise it is completion. The host delays its protobuf response until the data-path operation completes, then may return `next_transfer_priority`.
+Transfer Status request/response are fields 5/21. The device sends status for the negotiated transfer handle. A request with `failure_reason` indicates transfer failure; otherwise it is completion. The host delays its protobuf response until the data-path operation completes, then may return `next_transfer_priority`. Cancel Transfer request/response are fields 18/19; request field 1 is the transfer handle and response status 0/1 means success/unknown-transfer. Garmin treats both outcomes as an idempotent successful cleanup.
 
 Recovered fitness-facing data-type names used by higher sync agents include `FIT_TYPE_4` (activity), `FIT_TYPE_32` (monitoring) and `FIT_TYPE_49` (sleep). They are listing/filter names, not fixed watch file IDs.
 
@@ -860,7 +860,7 @@ After a successful Pull response returns a transfer handle, the host opens a rel
 
 Transport-pipe direction is **0 read, 1 write** (separate from the FileAccess `TransferDirection` enum, whose PULL value is 1). Configure response is at least three bytes: command/echo byte, general status, configure status; both statuses must be zero.
 
-The initial clean-room pull path requests no compression, ACKs reliable packets cumulatively, concatenates accepted data until the listed item size is reached, then waits for and answers the device Transfer Status request. Compression negotiation and native-equivalent adaptive timers are deferred until target-watch evidence requires them.
+The clean-room pull path defaults to no compression, ACKs reliable packets cumulatively, concatenates accepted data until the listed item size is reached, then waits for and answers the device Transfer Status request. Optional pull compression is modeled as a standard zlib stream because the recovered read wrapper uses Java `Inflater()`/`InflaterOutputStream`; the listed item size remains the decompressed size. Local transport/configuration failure sends best-effort Cancel Transfer before closing the MultiLink service. Native-equivalent adaptive MLR timers remain deferred until target-watch evidence requires them.
 
 ---
 
@@ -992,7 +992,7 @@ Current local tests are offline/static-proof tests and are not substitutes for t
 | T-0064/T-0065 | `tests/test_file_access_proto.py` / `tests/test_file_access_client.py` FileAccess list/pull/status control | P-0700 |
 | T-0066 | `tests/test_multilink.py` / `tests/test_multilink_client.py` MultiLink command/registration vectors | P-0701 |
 | T-0067 | `tests/test_mlr.py` native-vector reliable header/fragmentation/ACK state | P-0702 |
-| T-0068 | offline uncompressed FileAccess + MultiLink/MLR download simulation | P-0703 |
+| T-0068 | offline FileAccess + MultiLink/MLR download, zlib and cancel/recovery simulation | P-0703 |
 
 ## Current blockers
 

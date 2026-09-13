@@ -108,7 +108,7 @@ class MultiLinkClient:
                     paired = paired_characteristic(alternate)
                     await self._select_pair(
                         alternate,
-                        paired if paired in characteristic_uuids and write_uuid != notify_uuid else alternate,
+                        paired if paired in characteristic_uuids else alternate,
                     )
                     await self.close_all()
                     retry = await self.register_service(REGISTRATION_SERVICE_ID, request_reliable=False)
