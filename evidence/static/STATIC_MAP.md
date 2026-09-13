@@ -134,7 +134,7 @@ Notification payload semantics also traverse Android notification/ANCS-like and 
 
 ## S-0011 — Native-code boundary
 
-`analysis/inventory/native_boundary.json` inventories native libraries and all `System.load*`/Java `native` declarations found by the static scan. The bundle contains many native libraries, but the scan found zero load/native declarations in the identified watch-protocol namespaces (`gfdi`, `yg2`, `aq2`, `bq2`, `dq2`, `lq2`, `x72` and device BLE/pairing namespaces). Current evidence therefore supports keeping the protocol implementation entirely managed-language; native libraries remain available for targeted inspection if a future static call path crosses JNI.
+Most GFDI framing/authentication remains managed-language, but next-generation FileAccess crosses JNI at Garmin MultiLink Reliable (MLR). `MLRInitializer` loads `libreliable-ml.so`; `MLRConnectionHelper` exposes native open/close, raw receive, ready-to-send and data-blob calls. The independent implementation therefore treats the native library as local evidence only and reimplements the recovered wire behavior without shipping or loading Garmin binaries. The static scanner includes `device/multilink`, `device/filetransfer`, `ui2`, `vi2` and `wi2` so this boundary cannot silently regress back to “no native protocol path.”
 
 ## S-0012 — Static dependency graph
 
@@ -166,9 +166,13 @@ message dispatcher / request-response transactions (dq2)
         +--> handshake/device info/config (jq2)
         +--> battery/status (s72)
         +--> time (eq2)
-        +--> file transfer (com.garmin.gfdi.file, gq2, hq2)
+        +--> legacy file transfer (com.garmin.gfdi.file, gq2, hq2)
         +--> smart notifications/GNCS (com.garmin.android.gncs)
-        +--> protobuf and other feature handlers
+        +--> protobuf Core/FileAccess control (mq2, com.garmin.device.filetransfer)
+                 |
+                 +--> MultiLink GATT registration (vi2/wi2)
+                         |
+                         +--> MLR reliable packets (JNI in Garmin app; clean-room in this repo)
 ```
 
 This graph is the working map for clean-room reconstruction. Every runtime module is to consume protocol facts, not Garmin classes.
@@ -262,3 +266,29 @@ Static analysis of `mq2/C35222d.java` plus its smali fallback resolves the gener
 Primary evidence: `analysis/jadx/sources/mq2/C35222d.java`, `analysis/apktool/smali_classes7/mq2/d.smali`, `GDISmartProto.java`, `GDICore.java`, `GDICoreExtension.java`, `GDIGNCS.java`, `GDIGNCSExtension.java`, `aq2/C2861i.java`, and `com/garmin/android/gncs/SmartNotificationsDataHandler.java`.
 
 The runtime uses an independently written bounded protobuf-wire parser and explicitly modeled fields only; generated Garmin protobuf code is not imported or copied.
+
+
+## S-0019 — Next-generation FileAccess control plane
+
+Static protobuf descriptors plus `com/garmin/device/filetransfer/C11219a.java` / `C11220b.java` resolve the next-generation file API used when legacy configuration bit 90 is enabled.
+
+- Smart extension field 43 carries FileAccess service messages; Feature Capabilities extension field 16 advertises FileAccess support. Garmin's client contributes an empty request capability rather than inventing optional server features.
+- Item List request/response are service fields 9/10. Filters cover transaction/session IDs, flag UUIDs, included data types and modified-time metadata. Session IDs page a single listing; `next_transaction_id` supports later incremental listings.
+- Pull request/response are fields 1/2. The only recovered transport enum is MultiLink Transport Pipe (0). A successful pull returns a transfer handle and optionally a compression window.
+- Transfer Status request/response are fields 5/21. Completion is device-initiated: the host associates the request with the active transfer handle and replies only after the data path finishes. Unknown handles get an empty response.
+- The higher upload/sync layer explicitly includes `FIT_TYPE_4` (activity), `FIT_TYPE_32` (monitoring) and `FIT_TYPE_49` (sleep) among recovered fitness-oriented data-type names. This is a filter/classification fact, not a guarantee that every watch exposes each type.
+
+The independent runtime models the protobuf messages, pagination, pull negotiation and delayed transfer-status response without importing Garmin generated protobuf code.
+
+## S-0020 — MultiLink registration and MLR reliable wire format
+
+Static Java plus targeted local analysis of the x86_64 `libreliable-ml.so` split (kept outside git) resolves the FileAccess transport data plane far enough for a conservative clean-room implementation.
+
+- MultiLink service UUID is `6A4E2800-667B-11E3-949A-0800200C9A66`. Data characteristic candidates are `6A4E2810..2819`; each maps to `6A4E2820..2829` for the paired write characteristic when present, otherwise the same characteristic is used both ways.
+- Register command is `00 00 | clientId:u64LE | serviceId:u16LE | flags:u8`; flag `0x02` asks for reliable service. Successful response command `01` returns handle, reliable flag and optional revision. Status 3 can return an alternate characteristic. Registration service ID is 4.
+- FileAccess transport-pipe service IDs are `0x2018,0x4018,0x6018,0x8018,0xA018,0xC018,0xE018`. The pipe configure blob is `00 | direction:u8 | transferHandle:u64LE`, where direction is 0 read and 1 write.
+- Non-reliable MultiLink packets use a one-byte handle. Reliable MLR packets use two header bytes. For handle `0x80..0x87`, six-bit request number RN and six-bit sequence number SN: `b0=0x80|((handle&7)<<4)|(RN>>2)`, `b1=((RN&3)<<6)|SN`; payload capacity is `max_write_length-2`. RN is a cumulative ACK.
+- Four native self-test vectors were recovered and are used as independent codec test vectors: `05 01`, `d0 c2 ff`, `92 cd ff de a2`, `ff ff 01 02 03`.
+- Garmin's native engine has adaptive send-window/RTO/deferred-ACK behavior. The independent implementation does **not** clone unverified timer policy: current bring-up uses bounded outstanding packets and immediate cumulative ACKs, with uncompressed FileAccess reads first.
+
+Primary evidence is `vi2/C48927c0.java`, `C48939k.java`, `C48946r.java`, `wi2/C50817d.java`, `ui2/C47398e.java`, `MLRConnectionHelper.java`, and local decompilation of exported `mlr_format_*` / `MLR_reliable_*` functions. No native binary or decompiled Garmin source is committed.

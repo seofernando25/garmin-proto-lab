@@ -4,10 +4,12 @@ import pytest
 
 from garmin_proto_lab.crc import crc16_arc
 from garmin_proto_lab.fit import (
+    fit_file_type_from_data_type_name,
     FitError,
     FitFileType,
     classify_directory_fit_subtype,
     inspect_fit,
+    is_activity_or_health_data_type_name,
     is_activity_or_health_subtype,
     parse_fit_header,
 )
@@ -75,3 +77,15 @@ def test_fit_integrity_and_truncation_fail_closed() -> None:
     data = _fit_file()
     with pytest.raises(FitError, match="truncated"):
         inspect_fit(data[:-5])
+
+
+def test_next_gen_fit_data_type_name_classification() -> None:
+    assert fit_file_type_from_data_type_name("FIT_TYPE_4") is FitFileType.ACTIVITY
+    assert fit_file_type_from_data_type_name("FIT_TYPE_32") is FitFileType.MONITORING_B
+    assert fit_file_type_from_data_type_name("FIT_TYPE_49") is FitFileType.SLEEP_DATA
+    assert fit_file_type_from_data_type_name("FIT_TYPE_200") == 200
+    assert fit_file_type_from_data_type_name("activity") is None
+    assert is_activity_or_health_data_type_name("FIT_TYPE_4")
+    assert is_activity_or_health_data_type_name("FIT_TYPE_32")
+    assert is_activity_or_health_data_type_name("FIT_TYPE_49")
+    assert not is_activity_or_health_data_type_name("FIT_TYPE_35")

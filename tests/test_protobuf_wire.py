@@ -19,6 +19,7 @@ from garmin_proto_lab.smart_proto import (
     CORE_CONNECTION_READY_NOTIFICATION,
     CORE_FEATURE_CAPABILITIES_RESPONSE,
     FEATURE_CAPABILITIES_GNCS_EXTENSION,
+    FEATURE_CAPABILITIES_FILE_ACCESS_EXTENSION,
     SMART_CORE_EXTENSION,
     FeatureCapabilitiesRequest,
     GncsCapabilitiesAdvertisement,
@@ -109,3 +110,20 @@ def test_semantic_version_validation() -> None:
         semantic_version_to_int("1.2")
     with pytest.raises(ValueError):
         semantic_version_to_int("1.2.999")
+
+
+def test_feature_capabilities_preserve_file_access_extension_bytes() -> None:
+    file_access = encode_uint(3, 1) + encode_uint(4, 4096)
+    request = FeatureCapabilitiesRequest(file_access=b"")
+    smart = build_feature_capabilities_request(request)
+    core = last_bytes(parse_fields(smart), SMART_CORE_EXTENSION)
+    feature = last_bytes(parse_fields(core or b""), 8)
+    assert last_bytes(parse_fields(feature or b""), FEATURE_CAPABILITIES_FILE_ACCESS_EXTENSION) == b""
+
+    response_feature = encode_message(FEATURE_CAPABILITIES_FILE_ACCESS_EXTENSION, file_access)
+    response_smart = build_smart_extension(
+        SMART_CORE_EXTENSION,
+        encode_message(CORE_FEATURE_CAPABILITIES_RESPONSE, response_feature),
+    )
+    response = parse_feature_capabilities_response(response_smart)
+    assert response.file_access == file_access

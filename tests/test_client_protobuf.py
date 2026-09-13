@@ -71,10 +71,12 @@ class StubProtobuf:
         return self.response
 
 
-def _feature_response() -> bytes:
+def _feature_response(*, file_access: bool = False) -> bytes:
     gncs = encode_uint(1, 3) + encode_bool(2, True)
-    feature = encode_uint(1, 1) + encode_uint(2, 9) + encode_message(12, gncs)
-    core = encode_message(CORE_FEATURE_CAPABILITIES_RESPONSE, feature)
+    feature = bytearray(encode_uint(1, 1) + encode_uint(2, 9) + encode_message(12, gncs))
+    if file_access:
+        feature += encode_message(16, encode_uint(3, 1) + encode_uint(4, 123456) + encode_bool(5, True))
+    core = encode_message(CORE_FEATURE_CAPABILITIES_RESPONSE, bytes(feature))
     return build_smart_extension(SMART_CORE_EXTENSION, core)
 
 
@@ -128,7 +130,7 @@ def test_device_info_sets_protobuf_limit_and_feature_capabilities_are_semantic()
     asyncio.run(run())
 
 
-def test_feature_capability_exchange_is_gated_by_peer_and_host_flags() -> None:
+def test_feature_capability_exchange_is_gated_by_peer_flag_and_host_extensions() -> None:
     async def run_peer_gate() -> None:
         link = FakeLink()
         proto = StubProtobuf(link, _feature_response())
@@ -137,16 +139,20 @@ def test_feature_capability_exchange_is_gated_by_peer_and_host_flags() -> None:
         with pytest.raises(Exception, match="flag 95"):
             await client.refresh_feature_capabilities()
 
-    async def run_host_gate() -> None:
+    async def run_no_optional_extensions() -> None:
         link = FakeLink()
         proto = StubProtobuf(link, _feature_response())
         client = _client(link, proto, frozenset({71}))
         await _handshake(client, link, {95})
-        with pytest.raises(Exception, match="flag 6"):
-            await client.refresh_feature_capabilities()
+        await client.refresh_feature_capabilities()
+        smart_fields = parse_fields(proto.sent[-1])
+        core = last_bytes(smart_fields, 13)
+        feature = last_bytes(parse_fields(core or b""), 8)
+        fields = parse_fields(feature or b"")
+        assert not any(field.number in (12, 16) for field in fields)
 
     asyncio.run(run_peer_gate())
-    asyncio.run(run_host_gate())
+    asyncio.run(run_no_optional_extensions())
 
 
 def test_connection_ready_protobuf_listener_is_handled_without_semantic_response() -> None:
@@ -164,4 +170,27 @@ def test_connection_ready_protobuf_listener_is_handled_without_semantic_response
         event = await client.events.get()
         assert event.kind is SemanticKind.CONNECTION_READY
         assert event.value == {"request_id": 33}
+    asyncio.run(run())
+
+
+def test_file_access_feature_capabilities_are_advertised_only_for_host_flag_90() -> None:
+    async def run() -> None:
+        link = FakeLink()
+        proto = StubProtobuf(link, _feature_response(file_access=True))
+        client = _client(link, proto, frozenset({71, 90}))
+        await _handshake(client, link, {95})
+        response = await client.refresh_feature_capabilities()
+        assert response.file_access is not None
+        assert client.file_access_capabilities is not None
+        assert int(client.file_access_capabilities.server_file_checksum_method) == 1
+        assert client.file_access_capabilities.checksum_max_file_size_byte == 123456
+        assert client.file_access_capabilities.custom_flag_support is True
+
+        smart_fields = parse_fields(proto.sent[-1])
+        core = last_bytes(smart_fields, 13)
+        feature = last_bytes(parse_fields(core or b""), 8)
+        fields = parse_fields(feature or b"")
+        assert last_bytes(fields, 12) is None
+        # Empty extension is still present and therefore advertises the handler.
+        assert last_bytes(fields, 16) == b""
     asyncio.run(run())

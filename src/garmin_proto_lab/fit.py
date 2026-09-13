@@ -239,3 +239,24 @@ def classify_directory_fit_subtype(data_type: int, subtype: int) -> FitFileType 
 def is_activity_or_health_subtype(data_type: int, subtype: int) -> bool:
     kind = classify_directory_fit_subtype(data_type, subtype)
     return isinstance(kind, FitFileType) and kind in ACTIVITY_HEALTH_FILE_TYPES
+
+
+def fit_file_type_from_data_type_name(name: str | None) -> FitFileType | int | None:
+    """Map next-gen FileAccess names such as ``FIT_TYPE_4`` to FIT types."""
+    if name is None or not name.startswith("FIT_TYPE_"):
+        return None
+    try:
+        value = int(name.removeprefix("FIT_TYPE_"), 10)
+    except ValueError:
+        return None
+    if not 0 <= value <= 0xFF:
+        return None
+    try:
+        return FitFileType(value)
+    except ValueError:
+        return value
+
+
+def is_activity_or_health_data_type_name(name: str | None) -> bool:
+    kind = fit_file_type_from_data_type_name(name)
+    return isinstance(kind, FitFileType) and kind in ACTIVITY_HEALTH_FILE_TYPES

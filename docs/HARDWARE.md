@@ -18,7 +18,7 @@ On an Android test phone, enable **Bluetooth HCI snoop log**, then perform one o
 6. one device-info/battery exchange;
 7. one time sync;
 8. notification subscribe + one notification + one supported action/dismissal;
-9. file-type query + directory listing + one representative activity/health download;
+9. file-type query + directory listing + one representative activity/health download; if flag 90 is present, also record FileAccess/MultiLink registration and the first reliable packets;
 10. interrupt one larger download and observe restart/resume behavior.
 
 When `adb` is available, a bug report can be collected with `adb bugreport captures/<name>.zip`. Never commit the raw archive.
@@ -48,7 +48,7 @@ Stop `btmon` after the single intended experiment. Use a new capture for each st
 
 For every baseline GATT operation, record a sanitized `D-####` observation containing direction, service/characteristic, operation type, length, and protocol interpretation. Correlate it to the static `S-####` path or mark it unresolved. Secret bytes are replaced by their role and length, not copied into notes.
 
-Minimum facts to confirm before checking M2 are: active GFDI service/characteristic pair, negotiated MTU, subscription order, 5024/5050 ordering, 5101-5111 pairing/reconnect order, persistence boundary, and whether Smart protobuf flag 95 is used by this watch.
+Minimum facts to confirm before checking M2 are: active GFDI service/characteristic pair, negotiated MTU, subscription order, 5024/5050 ordering, 5101-5111 pairing/reconnect order, persistence boundary, and whether Smart protobuf flag 95 is used by this watch. If configuration flag 90 is present, also confirm the MultiLink 0x281x/0x282x pair, registration service 4, a reliable FileAccess service ID, and the read-pipe configure/status lifecycle before enabling next-gen downloads by default.
 
 ## 5. Recovery matrix
 

@@ -56,6 +56,26 @@ Visible pairing uses a `passkey_provider(mode, timeout_seconds)` callback. The c
 
 Do not assume optional watch features. The client first consumes legacy Configuration 5050. Smart/Core feature capabilities are queried only when peer flag 95 is present; GNCS requires host flag 6. Time uses the 5052 request path when peer flag 71 is present, otherwise the legacy 5026 settings path is used.
 
+
+## Experimental next-generation FileAccess
+
+For watches that advertise legacy flag 90, `FileAccessControlClient` implements protobuf item listing/pull/status handling. `MultiLinkClient` implements the recovered MultiLink registration channel and `FileAccessMlrDownloader` joins it to the clean-room MLR data path. The current downloader deliberately requests **uncompressed** reads and uses conservative immediate cumulative ACKs.
+
+```python
+control = client.file_access_control
+ml = MultiLinkClient(
+    backend,
+    transport.services,
+    connection_id=my_stable_nonzero_app_id,
+    max_write_length=transport.write_payload_size,
+)
+await ml.initialize()
+listing = await control.list_items()
+download = await FileAccessMlrDownloader(control, ml).download(listing.items[0])
+```
+
+`connection_id` is the independent application's stable MultiLink identity. Do not copy Garmin Connect's private configured value. This path is offline-tested but remains experimental until a target watch validates service registration, reliable timing and recovery.
+
 ## Hardware workflow
 
 The reference CLI exercises the same API:

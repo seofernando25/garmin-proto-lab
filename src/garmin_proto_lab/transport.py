@@ -153,6 +153,7 @@ class BleTransport:
     state: TransportState = TransportState.NOT_STARTED
     device: DiscoveredDevice | None = None
     link: GfdiLink | None = None
+    services: tuple[GattService, ...] = ()
     negotiated_mtu: int = 23
     _notification_callback: NotificationCallback | None = None
     events: list[TransportEvent] = field(default_factory=list)
@@ -198,7 +199,8 @@ class BleTransport:
                     raise TransportError("bonding did not complete")
 
             self._set_state(TransportState.DISCOVERING_SERVICES)
-            services = await asyncio.wait_for(self.backend.discover_services(), self.operation_timeout)
+            services = tuple(await asyncio.wait_for(self.backend.discover_services(), self.operation_timeout))
+            self.services = services
             self.link = select_gfdi_link(services)
             mtu = await asyncio.wait_for(self.backend.request_mtu(self.requested_mtu), self.operation_timeout)
             if mtu < 23:
@@ -232,6 +234,7 @@ class BleTransport:
         if self.state in (TransportState.DISCONNECTING, TransportState.FINISHED, TransportState.NOT_STARTED):
             return
         self.link = None
+        self.services = ()
         self.negotiated_mtu = 23
         self._set_state(TransportState.FAILED, "unexpected BLE disconnect")
 
@@ -280,6 +283,7 @@ class BleTransport:
             await asyncio.wait_for(self.backend.disconnect(), self.operation_timeout)
         finally:
             self.link = None
+            self.services = ()
             self.device = None
             self._notification_callback = None
             self.negotiated_mtu = 23

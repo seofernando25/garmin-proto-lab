@@ -12,7 +12,8 @@ Independent interoperability research and a clean-room Python reference implemen
 - XXTEA authentication, pairing/session state, LTK reconnect, secure-session wrapping
 - device information, configuration, battery, time, and Smart protobuf feature capabilities
 - GNCS notification subscription/source/control-point/data-source codecs
-- file directory discovery, file download, retry/integrity state, and basic FIT inspection
+- legacy file directory/download plus basic FIT inspection
+- next-gen FileAccess protobuf, MultiLink registration, and clean-room MLR wire/data-path implementation (offline-tested)
 - semantic client API and `garmin-proto` CLI
 
 The test suite currently covers the reconstructed offline behavior. Passing tests do **not** imply compatibility with a particular watch until the hardware verification matrix in `GOAL.md` passes.
@@ -52,4 +53,4 @@ See `docs/INVESTIGATION.md` for the concise investigation record, `docs/API.md` 
 
 ## Current blocker
 
-A target Garmin watch is not presently available at the development machine. The remaining decisive work is live GATT discovery, fresh pairing, reconnect persistence, end-to-end notification delivery, representative activity/health transfer, and recovery testing on the designated watch/firmware.
+A target Garmin watch is not presently available at the development machine. Static reconstruction can continue, but the decisive gate is now hardware validation: live GATT discovery, fresh pairing/reconnect persistence, and representative legacy/next-gen activity or health downloads. The clean-room MultiLink/MLR path is intentionally conservative (uncompressed, immediate cumulative ACKs) until a real watch trace validates timing, service registration, and recovery behavior.

@@ -29,6 +29,8 @@ CORE_FEATURE_CAPABILITIES_REQUEST = 8
 CORE_FEATURE_CAPABILITIES_RESPONSE = 9
 CORE_CONNECTION_READY_NOTIFICATION = 14
 FEATURE_CAPABILITIES_GNCS_EXTENSION = 12
+FEATURE_CAPABILITIES_FILE_ACCESS_EXTENSION = 16
+SMART_FILE_ACCESS_SERVICE_EXTENSION = 43
 
 
 class NotificationDisabledReason(IntEnum):
@@ -101,6 +103,7 @@ class GncsCapabilitiesAdvertisement:
 @dataclass(frozen=True, slots=True)
 class FeatureCapabilitiesRequest:
     gncs: GncsCapabilitiesAdvertisement | None = None
+    file_access: bytes | None = None
     garmin_guid: bytes | None = None
     client_version: int | None = None
     display_name: str | None = None
@@ -115,6 +118,8 @@ class FeatureCapabilitiesRequest:
             out += encode_string(3, self.display_name)
         if self.gncs is not None:
             out += encode_message(FEATURE_CAPABILITIES_GNCS_EXTENSION, self.gncs.encode())
+        if self.file_access is not None:
+            out += encode_message(FEATURE_CAPABILITIES_FILE_ACCESS_EXTENSION, self.file_access)
         return bytes(out)
 
 
@@ -146,6 +151,7 @@ class FeatureCapabilitiesResponse:
     guid_status: GuidStatus | int | None
     version: int | None
     gncs: GncsCapabilitiesResponse | None
+    file_access: bytes | None
     raw_fields: tuple[WireField, ...]
 
 
@@ -170,7 +176,8 @@ def parse_feature_capabilities_response(smart_bytes: bytes) -> FeatureCapabiliti
     version = last_varint(fields, 2)
     raw_gncs = last_bytes(fields, FEATURE_CAPABILITIES_GNCS_EXTENSION)
     gncs = GncsCapabilitiesResponse.parse(raw_gncs) if raw_gncs is not None else None
-    return FeatureCapabilitiesResponse(guid, version, gncs, fields)
+    file_access = last_bytes(fields, FEATURE_CAPABILITIES_FILE_ACCESS_EXTENSION)
+    return FeatureCapabilitiesResponse(guid, version, gncs, file_access, fields)
 
 
 def is_connection_ready_notification(smart_bytes: bytes) -> bool:
@@ -188,4 +195,7 @@ def is_connection_ready_notification(smart_bytes: bytes) -> bool:
 
 def smart_has_known_extension(smart_bytes: bytes) -> bool:
     smart = SmartMessage.parse(smart_bytes)
-    return any(number in {SMART_CORE_EXTENSION, SMART_GNCS_SERVICE_EXTENSION} for number in smart.extension_numbers)
+    return any(
+        number in {SMART_CORE_EXTENSION, SMART_GNCS_SERVICE_EXTENSION, SMART_FILE_ACCESS_SERVICE_EXTENSION}
+        for number in smart.extension_numbers
+    )

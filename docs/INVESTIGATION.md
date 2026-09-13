@@ -18,7 +18,8 @@ Android/BlueZ BLE
   -> GFDI frame + CRC-16
   -> optional XXTEA secure-session wrapper
   -> request/response dispatcher
-  -> device/config/battery/time/file/GNCS + Smart protobuf handlers
+  -> device/config/battery/time/legacy-file/GNCS + Smart protobuf handlers
+  -> optional FileAccess protobuf control -> MultiLink GATT -> MLR reliable packets
 ```
 
 Static evidence indicates Garmin Connect requests ATT MTU 515 and treats notification boundaries as arbitrary stream chunks rather than protocol packet boundaries.
@@ -56,7 +57,9 @@ The complete working message census and field layouts are in `spec/PROTOCOL.md`.
 
 ## Offline implementation status
 
-The reference library includes transport selection, framing, authentication/session orchestration, semantic handshake, GNCS codecs, file listing/download state, FIT-file inspection, and a CLI. Property tests exercise COBS/frame round trips, malformed inputs, stream fragmentation, secure counters, file CRC/offset handling, protobuf chunking, and related parser bounds.
+The reference library includes transport selection, framing, authentication/session orchestration, semantic handshake, GNCS codecs, legacy file listing/download, FIT inspection, and next-generation FileAccess/MultiLink control plus an offline MLR pull path. Property tests exercise framing, secure counters, file CRC/offset handling, protobuf chunking, exact MultiLink command vectors and MLR vectors recovered from the native library's own format self-test.
+
+The important late static finding is that next-generation FileAccess is the one watch-facing path that crosses Garmin JNI: `MLRInitializer` loads `libreliable-ml.so`. Local native analysis recovered the two-byte reliable header, cumulative ACK fields, fragmentation formula and service-registration flow. The public implementation is clean-room Python and does not ship/load the Garmin `.so`; adaptive native timer/window policy remains intentionally unimplemented until hardware traces justify it.
 
 Offline tests are evidence for implementation consistency only. They cannot upgrade watch-specific facts to `CONFIRMED`.
 
@@ -76,4 +79,4 @@ Raw captures must stay outside version control. Sanitized observations should be
 
 ## Known blocker
 
-The target watch is not currently present at the development machine. That blocks the M2 dynamic baseline and every completion requirement that explicitly demands on-watch verification. The project must not mark those requirements complete based only on static analysis or simulation.
+The target watch is not currently present at the development machine. Static reconstruction is no longer the main blocker: the decisive unknowns are live pairing persistence and whether the target accepts the reconstructed MultiLink registration/MLR behavior for activity/monitoring/sleep downloads. Those claims remain unconfirmed until hardware tests pass.

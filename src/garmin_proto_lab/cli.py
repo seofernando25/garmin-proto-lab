@@ -209,9 +209,10 @@ async def _workflow(args: argparse.Namespace) -> int:
     client = GarminClient(
         link,
         HostIdentity(args.client_version, args.client_name, "Independent interoperability lab", "Python GFDI client"),
-        # Static managers used by this reference client: GNCS smart notifications
-        # requires config bit 6 and the current-time request path uses bit 71.
-        frozenset({6, 71}),
+        # Static managers used by this reference client: GNCS uses bit 6 and
+        # current-time request mode uses bit 71. Next-gen FileAccess (bit 90)
+        # remains explicit opt-in until its MultiLink data plane is verified.
+        frozenset({6, 71} | ({90} if args.enable_next_gen_file_access else set())),
         auth=auth,
     )
 
@@ -252,6 +253,21 @@ async def _workflow(args: argparse.Namespace) -> int:
                             "version": capabilities.version,
                             "gncs_nc_version": capabilities.gncs.nc_version if capabilities.gncs else None,
                             "gncs_support_blocked_apps": capabilities.gncs.support_blocked_apps if capabilities.gncs else None,
+                            "file_access": (
+                                {
+                                    "checksum_method": int(client.file_access_capabilities.server_file_checksum_method)
+                                    if client.file_access_capabilities and client.file_access_capabilities.server_file_checksum_method is not None
+                                    else None,
+                                    "checksum_max_file_size": client.file_access_capabilities.checksum_max_file_size_byte
+                                    if client.file_access_capabilities
+                                    else None,
+                                    "custom_flags": client.file_access_capabilities.custom_flag_support
+                                    if client.file_access_capabilities
+                                    else None,
+                                }
+                                if client.file_access_capabilities is not None
+                                else None
+                            ),
                         }
                     },
                     indent=2,
@@ -367,6 +383,7 @@ def build_parser() -> argparse.ArgumentParser:
     workflow.add_argument("--battery-percent", type=int, default=100)
     workflow.add_argument("--skip-battery", action="store_true")
     workflow.add_argument("--skip-feature-capabilities", action="store_true")
+    workflow.add_argument("--enable-next-gen-file-access", action="store_true", help="advertise statically reconstructed FileAccess config bit 90; control plane only")
     workflow.add_argument("--gncs-version", default="0.1.0", help="independent GNCS semantic version advertised to capable watches")
     workflow.add_argument("--skip-time", action="store_true")
     workflow.add_argument("--skip-files", action="store_true")

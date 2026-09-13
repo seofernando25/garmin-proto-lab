@@ -28,6 +28,8 @@ from .auth_protocol import AUTH_IDS, AuthProtocolEngine, EstablishedSession
 from .battery import BatteryStatus, build_phone_battery_status, parse_battery_status
 from .configuration import Configuration
 from .device_settings import TIME_REQUEST_CONFIGURATION_FLAG, build_legacy_time_settings, build_time_updated_event
+from .file_access_client import FileAccessControlClient
+from .file_access_proto import FILE_ACCESS_CONFIGURATION_FLAG, FileAccessCapabilities
 from .file_client import DirectoryListing, FileReadResult, FileTransferClient, ListedFile
 from .filetransfer import DirectoryFilter
 from .fit import FitInspection, inspect_fit, is_activity_or_health_subtype
@@ -176,10 +178,12 @@ class GarminClient:
     auth: AuthProtocolEngine | None = None
     file_transfer: FileTransferClient | None = None
     protobuf: ProtobufSmartLink | None = None
+    file_access_control: FileAccessControlClient | None = None
     handshake: HandshakeState = field(init=False)
     events: asyncio.Queue[SemanticEvent] = field(default_factory=asyncio.Queue)
     session_key: bytes | None = None
     feature_capabilities: FeatureCapabilitiesResponse | None = None
+    file_access_capabilities: FileAccessCapabilities | None = None
     notifications: dict[int, NotificationRecord] = field(default_factory=dict)
     _time_request_seen: asyncio.Event = field(default_factory=asyncio.Event)
     _tasks: set[asyncio.Task[Any]] = field(default_factory=set)
@@ -194,12 +198,20 @@ class GarminClient:
             self.protobuf = ProtobufSmartLink(self.link)
         elif self.protobuf.link is not self.link:
             raise ClientError("protobuf client and semantic client must share the same GFDI link")
+        if self.file_access_control is None:
+            self.file_access_control = FileAccessControlClient(self.protobuf)
+        elif self.file_access_control.protobuf is not self.protobuf:
+            raise ClientError("FileAccess control client and semantic client must share the same protobuf link")
         previous_protobuf_handler = self.protobuf.request_handler
 
         async def protobuf_request(request_id: int, serialized_smart: bytes):
             if is_connection_ready_notification(serialized_smart):
                 await self._emit(SemanticKind.CONNECTION_READY, {"request_id": request_id}, 5043)
                 return True
+            if self.file_access_control is not None:
+                outcome = await self.file_access_control.handle_incoming(request_id, serialized_smart)
+                if outcome is not False and outcome is not None:
+                    return outcome
             if previous_protobuf_handler is not None:
                 result = previous_protobuf_handler(request_id, serialized_smart)
                 if hasattr(result, "__await__"):
@@ -372,21 +384,31 @@ class GarminClient:
             raise ClientError("cannot query feature capabilities before peer configuration")
         if FEATURE_CAPABILITIES_CONFIGURATION_FLAG not in peer.effective_flags():
             raise ClientError("watch did not advertise protobuf feature-capabilities flag 95")
-        if GNCS_CONFIGURATION_FLAG not in self.host_configuration_flags:
-            raise ClientError("GNCS feature capabilities require host configuration flag 6")
         if self.protobuf is None:
             raise ClientError("protobuf transport is not configured")
-        request = FeatureCapabilitiesRequest(
-            gncs=GncsCapabilitiesAdvertisement(
+        gncs = None
+        if GNCS_CONFIGURATION_FLAG in self.host_configuration_flags:
+            gncs = GncsCapabilitiesAdvertisement(
                 semantic_version_to_int(gncs_version),
                 notification_disabled_reason,
                 default_messaging_app_id,
                 default_dialer_app_id,
             )
-        )
+        file_access = None
+        if FILE_ACCESS_CONFIGURATION_FLAG in self.host_configuration_flags:
+            # The recovered FileAccess manager contributes an empty capabilities
+            # message; this advertises protocol participation without inventing
+            # optional server features.
+            file_access = FileAccessCapabilities().encode()
+        request = FeatureCapabilitiesRequest(gncs=gncs, file_access=file_access)
         response_bytes = await self.protobuf.request(build_feature_capabilities_request(request))
         response = parse_feature_capabilities_response(response_bytes)
         self.feature_capabilities = response
+        self.file_access_capabilities = (
+            FileAccessCapabilities.parse(response.file_access)
+            if response.file_access is not None
+            else None
+        )
         await self._emit(SemanticKind.FEATURE_CAPABILITIES, response, 5044)
         return response
 
@@ -602,4 +624,5 @@ class GarminClient:
             "secure_session": self.session_key is not None,
             "file_transfer_active": bool(self.file_transfer and self.file_transfer.active),
             "feature_capabilities": self.feature_capabilities is not None,
+            "next_gen_file_access": self.file_access_capabilities is not None,
         }

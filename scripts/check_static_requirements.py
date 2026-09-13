@@ -91,7 +91,9 @@ def main() -> int:
     require("File transfer" in text("spec/PROTOCOL.md"), "protocol file-transfer spec missing")
 
     require("native_libraries" in native, "native boundary missing library inventory")
-    require(len(native.get("watch_protocol_namespace_hits", [])) == 0, "watch protocol currently crosses identified native boundary")
+    require(any("libreliable-ml.so" in path for path in native.get("native_libraries", [])), "native inventory missing reliable MultiLink library")
+    protocol_native_hits = native.get("watch_protocol_namespace_hits", [])
+    require(any("device/multilink/reliable" in hit.get("file", "") for hit in protocol_native_hits), "native boundary scan missing reliable MultiLink JNI path")
     static_map = text("evidence/static/STATIC_MAP.md")
     for sid in ("S-0003", "S-0004", "S-0005", "S-0006", "S-0007", "S-0008", "S-0009", "S-0011", "S-0012"):
         require(sid in static_map, f"static evidence map missing {sid}")

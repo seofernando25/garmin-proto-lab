@@ -809,6 +809,61 @@ Core field 14 is an empty Connection Ready Notification carried in an incoming S
 
 ---
 
+## Layer 9 — Next-generation FileAccess over MultiLink
+
+### P-0700 — FileAccess protobuf service (`SUPPORTED`, S-0019; T-0064/T-0065)
+
+Legacy configuration flag 90 enables the next-generation FileAccess manager. Smart extension field 43 contains the FileAccess service and Core Feature Capabilities extension field 16 advertises FileAccess support. The host request advertises an empty capabilities message; optional server capabilities report push-bundle support, software-update-part support, truncated-MD5 support/size bound, and custom flags.
+
+Item List request/response are service fields 9/10. The first request can carry transaction ID, maximum count, excluded/requested flag UUIDs, included data types and requested metadata. A response session ID pages the same listing; a terminal response omits session ID and may include `next_transaction_id`. GDXML data-type strings can be sent once with a numeric string key and referenced by that key in later items/pages; the runtime keeps that table across a listing transaction. Pull request/response are fields 1/2 and select transport enum 0 (`MULTILINK_TRANSPORT_PIPE`).
+
+Transfer Status request/response are fields 5/21. The device sends status for the negotiated transfer handle. A request with `failure_reason` indicates transfer failure; otherwise it is completion. The host delays its protobuf response until the data-path operation completes, then may return `next_transfer_priority`.
+
+Recovered fitness-facing data-type names used by higher sync agents include `FIT_TYPE_4` (activity), `FIT_TYPE_32` (monitoring) and `FIT_TYPE_49` (sleep). They are listing/filter names, not fixed watch file IDs.
+
+### P-0701 — MultiLink GATT registration (`SUPPORTED`, S-0020; T-0066)
+
+MultiLink service UUID is `6A4E2800-667B-11E3-949A-0800200C9A66`. Candidate data characteristics are `6A4E2810..2819`; paired write characteristics are `6A4E2820..2829` when present. Control packets begin with zero.
+
+```text
+register request:  00 00 | client_id:u64LE | service_id:u16LE | flags:u8
+register response: 00 01 | client_id:u64LE | service_id:u16LE | status:u8 | ...
+close handle:      00 02 | client_id:u64LE | service_id:u16LE | handle:u8
+close all:         00 05 | client_id:u64LE | 0000
+```
+
+Register flag `0x02` requests a reliable service. Success status 0 returns `handle:u8`, optional flags (`bit0=reliable`) and optional revision. Statuses 1/2/3/4 are invalid-service, pending-auth, already-in-use and rejected. Status 3 can include an alternate characteristic. Registration service ID is 4. FileAccess transport-pipe services are `0x2018,0x4018,0x6018,0x8018,0xA018,0xC018,0xE018`.
+
+The MultiLink `client_id` is an application identifier from Garmin's client configuration. An independent application must use its own stable nonzero identifier; it must not copy Garmin Connect's value.
+
+### P-0702 — MLR reliable packet header (`SUPPORTED`, S-0020; T-0067)
+
+A non-reliable packet is `handle:u8 | payload`, with handle below `0x80`. Reliable handles are `0x80..0x87` and add a two-byte header carrying six-bit sequence number `SN` and cumulative request/ACK number `RN`:
+
+```text
+b0 = 0x80 | ((handle & 7) << 4) | (RN >> 2)
+b1 = ((RN & 3) << 6) | SN
+payload follows; capacity = max_write_length - 2
+```
+
+The native packet-count formula is `(data_length + max_write_length - 3) // (max_write_length - 2)`. Four native self-test wire vectors are used as independent implementation tests: `05 01`, `d0 c2 ff`, `92 cd ff de a2`, and `ff ff 01 02 03`.
+
+Garmin's native engine implements adaptive retransmission/window behavior. The clean-room client currently uses a bounded sender and immediate cumulative ACKs; this conservative policy is `SUPPORTED` only as an offline implementation, not `CONFIRMED` on a watch.
+
+### P-0703 — FileAccess transport-pipe read (`SUPPORTED`, S-0019/S-0020; T-0068)
+
+After a successful Pull response returns a transfer handle, the host opens a reliable FileAccess MultiLink service and sends a ten-byte configure blob:
+
+```text
+00 | direction:u8 | transfer_handle:u64LE
+```
+
+Transport-pipe direction is **0 read, 1 write** (separate from the FileAccess `TransferDirection` enum, whose PULL value is 1). Configure response is at least three bytes: command/echo byte, general status, configure status; both statuses must be zero.
+
+The initial clean-room pull path requests no compression, ACKs reliable packets cumulatively, concatenates accepted data until the listed item size is reached, then waits for and answers the device Transfer Status request. Compression negotiation and native-equivalent adaptive timers are deferred until target-watch evidence requires them.
+
+---
+
 ## Message-family census
 
 Current names recovered from the app's own message-name mapping:
@@ -934,7 +989,11 @@ Current local tests are offline/static-proof tests and are not substitutes for t
 | T-0061 | `tests/test_protobuf_transport.py` + `tests/test_protobuf_link.py` chunk/reassembly/cancel/error simulation | P-0600 |
 | T-0062 | `tests/test_protobuf_wire.py` bounded wire/envelope/capability vectors | P-0601..P-0603 |
 | T-0063 | `tests/test_client_protobuf.py` semantic capability gating + connection-ready handling | P-0602..P-0604 |
+| T-0064/T-0065 | `tests/test_file_access_proto.py` / `tests/test_file_access_client.py` FileAccess list/pull/status control | P-0700 |
+| T-0066 | `tests/test_multilink.py` / `tests/test_multilink_client.py` MultiLink command/registration vectors | P-0701 |
+| T-0067 | `tests/test_mlr.py` native-vector reliable header/fragmentation/ACK state | P-0702 |
+| T-0068 | offline uncompressed FileAccess + MultiLink/MLR download simulation | P-0703 |
 
 ## Current blockers
 
-There is intentionally no claim that pairing, reconnect, notification delivery or activity transfer works with a real watch yet. The target watch is not physically available at the current location, so all requirements that demand GATT discovery on that watch, a clean pairing trace or end-to-end device behavior remain blocked on hardware. Static reconstruction and offline implementation can continue up to that boundary.
+There is intentionally no claim that pairing, reconnect, notification delivery or activity transfer works with a real watch yet. Offline reconstruction now reaches both the legacy file path and an experimental next-generation FileAccess/MultiLink/MLR read path. The remaining decisive gate is hardware: verify fresh pairing/reconnect, actual MultiLink registration/client-ID acceptance, MLR timing/recovery, and representative activity/monitoring/sleep downloads on the target watch.

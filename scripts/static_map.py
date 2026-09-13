@@ -202,7 +202,7 @@ def scan_sources() -> tuple[dict, dict, dict, dict, int]:
     protocolish_hits: list[dict] = []
     mid_re = re.compile(r"(?<!\\d)(" + "|".join(str(x) for x in sorted(MESSAGE_IDS, reverse=True)) + r")(?!\\d)")
     ble_trigger = re.compile(r"Bluetooth|connectGatt|discoverServices|requestMtu|createBond|setCharacteristicNotification|writeCharacteristic|readCharacteristic|writeDescriptor|onConnectionStateChange|onServicesDiscovered|onCharacteristicChanged|onCharacteristicRead|onCharacteristicWrite|onDescriptorWrite|onMtuChanged")
-    protocol_terms = ("gfdi", "device/ble", "device/pair", "/yg2/", "/aq2/", "/bq2/", "/dq2/", "/lq2/", "/x72/")
+    protocol_terms = ("gfdi", "device/ble", "device/pair", "device/multilink", "device/filetransfer", "/yg2/", "/aq2/", "/bq2/", "/dq2/", "/lq2/", "/x72/", "/ui2/", "/vi2/", "/wi2/")
     count = 0
     for p in SRC.rglob("*.java"):
         try:

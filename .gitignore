@@ -9,6 +9,7 @@ __pycache__/
 analysis/bundle/
 analysis/jadx/
 analysis/apktool/
+analysis/native/
 captures/
 *.pcap
 *.pcapng

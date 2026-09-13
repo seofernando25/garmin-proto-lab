@@ -84,6 +84,45 @@ def encode_message(number: int, serialized_message: bytes) -> bytes:
     return encode_bytes(number, serialized_message)
 
 
+def encode_fixed64(number: int, value: int) -> bytes:
+    if not 0 <= value <= 0xFFFFFFFFFFFFFFFF:
+        raise ProtobufWireError("fixed64 value must fit uint64")
+    return _key(number, WireType.FIXED64) + value.to_bytes(8, "little")
+
+
+def encode_fixed32(number: int, value: int) -> bytes:
+    if not 0 <= value <= 0xFFFFFFFF:
+        raise ProtobufWireError("fixed32 value must fit uint32")
+    return _key(number, WireType.FIXED32) + value.to_bytes(4, "little")
+
+
+def encode_sint32(number: int, value: int) -> bytes:
+    if not -(1 << 31) <= value < (1 << 31):
+        raise ProtobufWireError("sint32 value out of range")
+    zigzag = ((value << 1) ^ (value >> 31)) & 0xFFFFFFFF
+    return encode_uint(number, zigzag)
+
+
+def decode_sint32(value: int) -> int:
+    if not 0 <= value <= 0xFFFFFFFF:
+        raise ProtobufWireError("encoded sint32 out of range")
+    return (value >> 1) ^ -(value & 1)
+
+
+def fixed64_value(field: WireField) -> int:
+    if field.wire_type is not WireType.FIXED64 or not isinstance(field.value, bytes) or len(field.value) != 8:
+        raise ProtobufWireError(f"field {field.number} is not fixed64")
+    return int.from_bytes(field.value, "little")
+
+
+def last_fixed64(fields: tuple[WireField, ...], number: int) -> int | None:
+    result: int | None = None
+    for field in fields:
+        if field.number == number:
+            result = fixed64_value(field)
+    return result
+
+
 def parse_fields(
     data: bytes,
     *,
