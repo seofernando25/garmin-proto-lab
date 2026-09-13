@@ -1,0 +1,53 @@
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.hypothesis/
+
+# Decompiled/generated evidence. Keep local; commit only deliberate sanitized reports.
+analysis/bundle/
+analysis/jadx/
+analysis/apktool/
+captures/
+*.pcap
+*.pcapng
+*.btsnoop
+*.log.raw
+
+# Sensitive/session material
+*.key
+*.pem
+*.p12
+*.keystore
+*.jks
+.env
+.env.*
+secrets/
+session-state/
+
+# Garmin binaries are local research inputs, not repository content.
+*.apk
+*.apkm
+*.xapk
+
+# Generated outputs
+build/
+dist/
+analysis/jadx-fallback/
+
+# Local acquisition/browser artifacts
+*.html
+chromium.err
+
+# Locally installed reversing tools and verbose command logs
+tools/
+evidence/logs/
+
+# Generated inventories are local except the compact provenance/toolchain records.
+analysis/inventory/*
+!analysis/inventory/artifacts.json
+!analysis/inventory/toolchain.json
+
+# Packaging metadata
+*.egg-info/

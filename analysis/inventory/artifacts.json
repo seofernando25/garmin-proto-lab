@@ -1,0 +1,78 @@
+{
+  "apkm": {
+    "bytes": 244867787,
+    "file": "garmin-connect-5.29.apkm",
+    "sha256": "e8bc4c653cda43371c8af45cfe8fad189017913994b2f9df10ada85217fca128"
+  },
+  "apkm_metadata": {
+    "apk_title": "Garmin Connect\u2122 5.29 (120-480dpi) (Android 12L+)",
+    "apkm_version": 5,
+    "arches": [
+      "arm64-v8a",
+      "armeabi-v7a",
+      "x86",
+      "x86_64"
+    ],
+    "dpis": [
+      "120",
+      "160",
+      "213",
+      "240",
+      "320",
+      "480"
+    ],
+    "languages": [
+      "ar",
+      "de",
+      "es",
+      "et",
+      "fi",
+      "fr",
+      "hu",
+      "in",
+      "it",
+      "ja",
+      "ko",
+      "ms",
+      "nl",
+      "pl",
+      "pt",
+      "ru",
+      "sv",
+      "th",
+      "tr",
+      "uk",
+      "vi",
+      "zh"
+    ],
+    "min_api": "32",
+    "pname": "com.garmin.android.apps.connectmobile",
+    "post_date": "2026-09-10 14:51:36",
+    "release_version": "5.29",
+    "variant": "(universal) (120-480dpi) (Android 12L+)",
+    "versioncode": "11548"
+  },
+  "base_apk": {
+    "bytes": 147829608,
+    "file": "garmin-connect-5.29-base.apk",
+    "min_sdk": "32",
+    "package": "com.garmin.android.apps.connectmobile",
+    "sha256": "d3d09c9e69516cc7dbcfe95f338a434a691bd0d57d002b097063309a0a9206b3",
+    "signing": {
+      "certificate_sha256": [
+        "84ff2bfa395c5a21e53ae29633e4a6e68b6b5c6707bb6084c25b70f866b71729"
+      ],
+      "schemes": {
+        "v1": false,
+        "v2": true,
+        "v3": true,
+        "v3.1": false
+      }
+    },
+    "target_sdk": "36",
+    "version_code": "11548",
+    "version_name": "5.29"
+  },
+  "bundle_extraction_date_utc": "2026-09-13",
+  "source": "APKMirror bundle already acquired for this project"
+}

@@ -1,0 +1,2 @@
+e8bc4c653cda43371c8af45cfe8fad189017913994b2f9df10ada85217fca128  garmin-connect-5.29.apkm
+d3d09c9e69516cc7dbcfe95f338a434a691bd0d57d002b097063309a0a9206b3  garmin-connect-5.29-base.apk

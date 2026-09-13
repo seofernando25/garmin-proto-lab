@@ -1,0 +1,110 @@
+{
+  "notes": [
+    "adb/platform-tools are not required for static analysis and were not used at this stage.",
+    "Wireshark/tshark are not required for static analysis and were not used at this stage.",
+    "Ghidra/rizin/binutils are recorded because they are available for native-boundary inspection."
+  ],
+  "platform": {
+    "machine": "x86_64",
+    "os_release": {
+      "ANSI_COLOR": "38;2;23;147;209",
+      "BUG_REPORT_URL": "https://github.com/cachyos",
+      "BUILD_ID": "rolling",
+      "DOCUMENTATION_URL": "https://wiki.cachyos.org/",
+      "HOME_URL": "https://cachyos.org/",
+      "ID": "cachyos",
+      "ID_LIKE": "arch",
+      "LOGO": "cachyos",
+      "NAME": "CachyOS Linux",
+      "PRETTY_NAME": "CachyOS",
+      "PRIVACY_POLICY_URL": "https://terms.archlinux.org/docs/privacy-policy/",
+      "SUPPORT_URL": "https://discuss.cachyos.org/"
+    },
+    "release": "7.2.3-1-cachyos",
+    "system": "Linux"
+  },
+  "tools": {
+    "adb": {
+      "acquisition": "not installed at initial inventory",
+      "path": null,
+      "used": false,
+      "version": null
+    },
+    "androguard": {
+      "acquisition": "uv development dependency, locked in uv.lock",
+      "path": "/home/fer/Documents/garmin-project/.venv",
+      "used": true,
+      "version": "4.1.4"
+    },
+    "apktool": {
+      "acquisition": "official Apktool GitHub release v3.0.3 JAR, project-local wrapper",
+      "jar_sha256": "dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423",
+      "path": "/home/fer/Documents/garmin-project/tools/bin/apktool",
+      "source": "https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar",
+      "used": true,
+      "version": "3.0.3"
+    },
+    "ghidra": {
+      "acquisition": "system preinstalled package",
+      "path": "/usr/bin/ghidra",
+      "used": true,
+      "version": "ghidra 12.1.2-2.1"
+    },
+    "jadx": {
+      "acquisition": "official GitHub release v1.5.6, unpacked project-locally",
+      "archive_sha256": "545ea2be9c242511bc145755cf4bda2485ade42966e096f8b4d3da2a230e8974",
+      "path": "/home/fer/Documents/garmin-project/tools/bin/jadx",
+      "source": "https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip",
+      "used": true,
+      "version": "1.5.6"
+    },
+    "java": {
+      "acquisition": "system preinstalled OpenJDK",
+      "path": "/usr/bin/java",
+      "used": true,
+      "version": "openjdk version \"17.0.19\" 2026-04-21"
+    },
+    "objdump": {
+      "acquisition": "system preinstalled binutils",
+      "path": "/usr/bin/objdump",
+      "used": true,
+      "version": "GNU objdump (GNU Binutils) 2.47"
+    },
+    "python": {
+      "acquisition": "system preinstalled; uv creates the project virtual environment",
+      "path": "/home/fer/Documents/garmin-project/.venv/bin/python3",
+      "used": true,
+      "version": "3.14.0"
+    },
+    "readelf": {
+      "acquisition": "system preinstalled binutils",
+      "path": "/usr/bin/readelf",
+      "used": true,
+      "version": "GNU readelf (GNU Binutils) 2.47"
+    },
+    "rizin": {
+      "acquisition": "system preinstalled",
+      "path": "/usr/bin/rizin",
+      "used": true,
+      "version": "rizin 0.8.2 @ linux-x86-64"
+    },
+    "tshark": {
+      "acquisition": "not installed at initial inventory",
+      "path": null,
+      "used": false,
+      "version": null
+    },
+    "uv": {
+      "acquisition": "user-local preinstalled",
+      "path": "/home/fer/.local/bin/uv",
+      "used": true,
+      "version": "uv 0.12.0 (x86_64-unknown-linux-gnu)"
+    },
+    "wireshark": {
+      "acquisition": "not installed at initial inventory",
+      "path": null,
+      "used": false,
+      "version": null
+    }
+  }
+}

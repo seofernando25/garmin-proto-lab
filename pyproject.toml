@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project]
+name = "garmin-proto-lab"
+version = "0.1.0"
+description = "Independent Garmin watch protocol interoperability research and reference compatibility layer"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+hardware = ["bleak>=0.22,<3"]
+
+[project.scripts]
+garmin-proto = "garmin_proto_lab.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0",
+  "hypothesis>=6.0",
+  "androguard>=4.1.4",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+pythonpath = ["src"]
