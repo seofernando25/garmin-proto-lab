@@ -12,3 +12,9 @@ During the current pass, `wh1le/garmin-bridge` was reviewed at its current publi
 ## 2026-09-13 — ADR-0002: public FIT profile is a protocol reference
 
 The public `garmin/fit-python-sdk` repository at revision `f0d86b18195dbdf9c5b2f135aad5d6ae541f5fbb` reports FIT Profile 21.214.0 and is used to cross-check standard FIT message names, field numbers, scales and enum values. No SDK code is vendored or imported by `garmin-proto-lab`; the project keeps its own small FIT container/record decoder and preserves raw fields it does not semantically project.
+
+## 2026-09-14 — ADR-0003: Gadgetbridge health-file map is a public interoperability reference
+
+Gadgetbridge revision `a0948ee1cbc2a870f91d313f8e37df5f524465f7` is used as a public cross-reference for Garmin FIT file families and Garmin-specific FIT message layouts. Its Garmin implementation identifies FIT subtypes 44 (metrics), 68 (HRV status), 70 (HSA), and 73 (skin temperature), plus Garmin-specific messages for physiological metrics, sleep metadata/raw/stats, HRV summary/value, and skin-temperature data.
+
+Gadgetbridge is AGPL-3.0-or-later. No Gadgetbridge source is copied into this repository. The project records protocol facts and implements them in its existing Python data model; raw FIT fields remain available alongside semantic projections.

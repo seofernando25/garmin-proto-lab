@@ -26,7 +26,7 @@ REQUIRED_API_MARKERS = (
 )
 REQUIRED_README_MARKERS = ("garmin-proto reset-pairing", "garmin-proto pair", "garmin-proto fitness-sync", "--fit-json", "resumable `.part`", "full-file CRC")
 REQUIRED_HARDWARE_MARKERS = ("reset-pairing", "5101–5111", "MultiLink", "interrupted FileAccess pull", "Garmin Connect stopped or absent")
-REQUIRED_TEST_IDS = ("T-0070", "T-0071", "T-0072", "T-0073", "T-0074", "T-0075", "T-0076", "T-0077", "T-0078", "T-0079", "T-0080", "T-0081", "T-0082")
+REQUIRED_TEST_IDS = ("T-0070", "T-0071", "T-0072", "T-0073", "T-0074", "T-0075", "T-0076", "T-0077", "T-0078", "T-0079", "T-0080", "T-0081", "T-0082", "T-0083")
 
 
 def require(text: str, markers: tuple[str, ...], label: str, failures: list[str]) -> None:

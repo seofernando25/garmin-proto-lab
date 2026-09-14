@@ -32,11 +32,17 @@ class FitFileType(IntEnum):
     DEBUG = 13
     BLOOD_PRESSURE = 14
     MONITORING_A = 15
+    ACTIVITY_SUMMARY = 20
+    MONITORING_DAILY = 28
     MONITORING_B = 32
     GOLF_SWING = 36
     GOLF_CLUB = 37
+    BIOMETRIC_METRICS = 44
     SLEEP_DATA = 49
     USER_BEHAVIOR_LOG = 52
+    HRV_STATUS = 68
+    HSA = 70
+    SKIN_TEMPERATURE = 73
     INVALID = 255
 
 
@@ -47,8 +53,14 @@ ACTIVITY_HEALTH_FILE_TYPES = frozenset(
         FitFileType.WEIGHT,
         FitFileType.BLOOD_PRESSURE,
         FitFileType.MONITORING_A,
+        FitFileType.ACTIVITY_SUMMARY,
+        FitFileType.MONITORING_DAILY,
         FitFileType.MONITORING_B,
+        FitFileType.BIOMETRIC_METRICS,
         FitFileType.SLEEP_DATA,
+        FitFileType.HRV_STATUS,
+        FitFileType.HSA,
+        FitFileType.SKIN_TEMPERATURE,
     }
 )
 
@@ -314,13 +326,28 @@ FIT_GLOBAL_MESSAGE_NAMES: dict[int, str] = {
     78: "HRV",
     103: "MONITORING_INFO",
     132: "HR",
+    140: "PHYSIOLOGICAL_METRICS",
     211: "MONITORING_HR_DATA",
     227: "STRESS_LEVEL",
     269: "SPO2_DATA",
+    273: "SLEEP_DATA_INFO",
+    274: "SLEEP_DATA_RAW",
     275: "SLEEP_LEVEL",
     279: "MONITORING_ENVIRONMENT",
     297: "RESPIRATION_RATE",
+    302: "HSA_ACCELEROMETER_DATA",
+    303: "HSA_PPG_DATA",
+    304: "HSA_STEP_DATA",
+    305: "HSA_SPO2_DATA",
+    306: "HSA_STRESS_DATA",
+    307: "HSA_RESPIRATION_DATA",
+    308: "HSA_HEART_RATE_DATA",
     314: "HSA_BODY_BATTERY_DATA",
+    346: "SLEEP_STATS",
+    370: "HRV_SUMMARY",
+    371: "HRV_VALUE",
+    397: "SKIN_TEMP_RAW",
+    398: "SKIN_TEMP_OVERNIGHT",
 }
 
 
@@ -618,12 +645,26 @@ FIT_MONITORING_GLOBAL_MESSAGE = 55
 FIT_HRV_GLOBAL_MESSAGE = 78
 FIT_MONITORING_INFO_GLOBAL_MESSAGE = 103
 FIT_HR_GLOBAL_MESSAGE = 132
+FIT_PHYSIOLOGICAL_METRICS_GLOBAL_MESSAGE = 140
 FIT_MONITORING_HR_GLOBAL_MESSAGE = 211
 FIT_STRESS_LEVEL_GLOBAL_MESSAGE = 227
 FIT_SPO2_GLOBAL_MESSAGE = 269
+FIT_SLEEP_DATA_INFO_GLOBAL_MESSAGE = 273
+FIT_SLEEP_DATA_RAW_GLOBAL_MESSAGE = 274
 FIT_SLEEP_LEVEL_GLOBAL_MESSAGE = 275
 FIT_RESPIRATION_RATE_GLOBAL_MESSAGE = 297
+FIT_HSA_ACCELEROMETER_GLOBAL_MESSAGE = 302
+FIT_HSA_STEP_GLOBAL_MESSAGE = 304
+FIT_HSA_SPO2_GLOBAL_MESSAGE = 305
+FIT_HSA_STRESS_GLOBAL_MESSAGE = 306
+FIT_HSA_RESPIRATION_GLOBAL_MESSAGE = 307
+FIT_HSA_HEART_RATE_GLOBAL_MESSAGE = 308
 FIT_BODY_BATTERY_GLOBAL_MESSAGE = 314
+FIT_SLEEP_STATS_GLOBAL_MESSAGE = 346
+FIT_HRV_SUMMARY_GLOBAL_MESSAGE = 370
+FIT_HRV_VALUE_GLOBAL_MESSAGE = 371
+FIT_SKIN_TEMP_RAW_GLOBAL_MESSAGE = 397
+FIT_SKIN_TEMP_OVERNIGHT_GLOBAL_MESSAGE = 398
 
 _SLEEP_LEVEL_NAMES = {
     0: "unmeasurable",
@@ -648,6 +689,14 @@ _BP_STATUS_NAMES = {
     2: "error_no_measurement",
     3: "error_data_out_of_range",
     4: "error_irregular_heart_rate",
+}
+
+_HRV_STATUS_NAMES = {
+    0: "none",
+    1: "poor",
+    2: "low",
+    3: "unbalanced",
+    4: "balanced",
 }
 
 _ACTIVITY_TYPE_NAMES = {
@@ -888,10 +937,14 @@ def _present_values(values: list[tuple[str, Any]]) -> tuple[tuple[str, Any], ...
     return tuple((name, value) for name, value in values if value is not None)
 
 
-def _wellness_from_record(record: FitDataRecord) -> WellnessSample | None:
+def _wellness_from_record(
+    record: FitDataRecord,
+    *,
+    timestamp_override: int | None = None,
+) -> WellnessSample | None:
     message = record.global_message_number
     values: list[tuple[str, Any]]
-    timestamp = record.timestamp
+    timestamp = record.timestamp if timestamp_override is None else timestamp_override
 
     if message == FIT_WEIGHT_SCALE_GLOBAL_MESSAGE:
         values = [
@@ -923,13 +976,25 @@ def _wellness_from_record(record: FitDataRecord) -> WellnessSample | None:
         ]
         kind = "blood_pressure"
     elif message == FIT_MONITORING_GLOBAL_MESSAGE:
+        activity_type = record.value(5)
+        packed_activity = record.value(24)
+        if activity_type is None:
+            if isinstance(packed_activity, bytes) and packed_activity:
+                activity_type = packed_activity[0] & 0x1F
+            elif isinstance(packed_activity, int):
+                activity_type = packed_activity & 0x1F
+        packed_intensity = None
+        if isinstance(packed_activity, bytes) and packed_activity:
+            packed_intensity = (packed_activity[0] >> 5) & 0x07
+        elif isinstance(packed_activity, int):
+            packed_intensity = (packed_activity >> 5) & 0x07
         values = [
             ("device_index", record.value(0)),
             ("calories_kcal", record.value(1)),
             ("distance_m", _scaled_fit_value(record.value(2), 100.0)),
             ("cycles", _scaled_fit_value(record.value(3), 2.0)),
             ("active_time_s", _scaled_fit_value(record.value(4), 1000.0)),
-            ("activity_type", _enum_fit_value(record.value(5), _ACTIVITY_TYPE_NAMES)),
+            ("activity_type", _enum_fit_value(activity_type, _ACTIVITY_TYPE_NAMES)),
             ("activity_subtype", _enum_fit_value(record.value(6), _ACTIVITY_SUBTYPE_NAMES)),
             ("activity_level", record.value(7)),
             ("local_timestamp", record.value(11)),
@@ -940,6 +1005,7 @@ def _wellness_from_record(record: FitDataRecord) -> WellnessSample | None:
             ("active_calories_kcal", record.value(19)),
             ("heart_rate_bpm", record.value(27)),
             ("intensity", _scaled_fit_value(record.value(28), 10.0)),
+            ("packed_intensity", packed_intensity),
             ("duration_min", record.value(29)),
             ("duration_s", record.value(30)),
             ("ascent_m", _scaled_fit_value(record.value(31), 1000.0)),
@@ -976,6 +1042,15 @@ def _wellness_from_record(record: FitDataRecord) -> WellnessSample | None:
             ("event_timestamp_s", _scaled_fit_value(record.value(9), 1024.0)),
         ]
         kind = "heart_rate"
+    elif message == FIT_PHYSIOLOGICAL_METRICS_GLOBAL_MESSAGE:
+        values = [
+            ("aerobic_training_effect", _scaled_fit_value(record.value(4), 10.0)),
+            ("met_max", _scaled_fit_value(record.value(7), 65536.0)),
+            ("recovery_time_min", record.value(9)),
+            ("lactate_threshold_heart_rate_bpm", record.value(14)),
+            ("anaerobic_training_effect", _scaled_fit_value(record.value(20), 10.0)),
+        ]
+        kind = "physiological_metrics"
     elif message == FIT_MONITORING_HR_GLOBAL_MESSAGE:
         values = [
             ("resting_heart_rate_bpm", record.value(0)),
@@ -986,7 +1061,10 @@ def _wellness_from_record(record: FitDataRecord) -> WellnessSample | None:
         stress_timestamp = record.value(1)
         if isinstance(stress_timestamp, int):
             timestamp = stress_timestamp
-        values = [("stress_level", record.value(0))]
+        values = [
+            ("stress_level", record.value(0)),
+            ("body_energy", record.value(3)),
+        ]
         kind = "stress"
     elif message == FIT_SPO2_GLOBAL_MESSAGE:
         values = [
@@ -995,12 +1073,47 @@ def _wellness_from_record(record: FitDataRecord) -> WellnessSample | None:
             ("mode", _enum_fit_value(record.value(2), _SPO2_MODE_NAMES)),
         ]
         kind = "spo2"
+    elif message == FIT_SLEEP_DATA_INFO_GLOBAL_MESSAGE:
+        values = [
+            ("sample_length", record.value(1)),
+            ("local_timestamp", record.value(2)),
+            ("version", record.value(4)),
+        ]
+        kind = "sleep_data_info"
+    elif message == FIT_SLEEP_DATA_RAW_GLOBAL_MESSAGE:
+        values = [("raw_sample", record.value(0))]
+        kind = "sleep_data_raw"
     elif message == FIT_SLEEP_LEVEL_GLOBAL_MESSAGE:
         values = [("sleep_level", _enum_fit_value(record.value(0), _SLEEP_LEVEL_NAMES))]
         kind = "sleep_level"
     elif message == FIT_RESPIRATION_RATE_GLOBAL_MESSAGE:
         values = [("respiration_rate_breaths_per_min", _scaled_fit_value(record.value(0), 100.0))]
         kind = "respiration_rate"
+    elif message == FIT_HSA_ACCELEROMETER_GLOBAL_MESSAGE:
+        values = [
+            ("timestamp_ms", record.value(0)),
+            ("sampling_interval_ms", record.value(1)),
+            ("accel_x_mg", _scaled_fit_value(record.value(2), 1.024)),
+            ("accel_y_mg", _scaled_fit_value(record.value(3), 1.024)),
+            ("accel_z_mg", _scaled_fit_value(record.value(4), 1.024)),
+            ("timestamp_32k", record.value(5)),
+        ]
+        kind = "hsa_accelerometer"
+    elif message == FIT_HSA_STEP_GLOBAL_MESSAGE:
+        values = [("processing_interval_s", record.value(0)), ("steps", record.value(1))]
+        kind = "hsa_steps"
+    elif message == FIT_HSA_SPO2_GLOBAL_MESSAGE:
+        values = [("processing_interval_s", record.value(0)), ("spo2_percent", record.value(1)), ("confidence", record.value(2))]
+        kind = "hsa_spo2"
+    elif message == FIT_HSA_STRESS_GLOBAL_MESSAGE:
+        values = [("processing_interval_s", record.value(0)), ("stress_levels", record.value(1))]
+        kind = "hsa_stress"
+    elif message == FIT_HSA_RESPIRATION_GLOBAL_MESSAGE:
+        values = [("processing_interval_s", record.value(0)), ("respiration_rate_breaths_per_min", _scaled_fit_value(record.value(1), 100.0))]
+        kind = "hsa_respiration"
+    elif message == FIT_HSA_HEART_RATE_GLOBAL_MESSAGE:
+        values = [("processing_interval_s", record.value(0)), ("status", record.value(1)), ("heart_rate_bpm", record.value(2))]
+        kind = "hsa_heart_rate"
     elif message == FIT_BODY_BATTERY_GLOBAL_MESSAGE:
         values = [
             ("processing_interval_s", record.value(0)),
@@ -1009,6 +1122,48 @@ def _wellness_from_record(record: FitDataRecord) -> WellnessSample | None:
             ("uncharged", record.value(3)),
         ]
         kind = "body_battery"
+    elif message == FIT_SLEEP_STATS_GLOBAL_MESSAGE:
+        values = [
+            ("combined_awake_score", record.value(0)),
+            ("awake_time_score", record.value(1)),
+            ("awakenings_count_score", record.value(2)),
+            ("deep_sleep_score", record.value(3)),
+            ("sleep_duration_score", record.value(4)),
+            ("light_sleep_score", record.value(5)),
+            ("overall_sleep_score", record.value(6)),
+            ("sleep_quality_score", record.value(7)),
+            ("sleep_recovery_score", record.value(8)),
+            ("rem_sleep_score", record.value(9)),
+            ("sleep_restlessness_score", record.value(10)),
+            ("awakenings_count", record.value(11)),
+            ("interruptions_score", record.value(14)),
+            ("average_stress_during_sleep", _scaled_fit_value(record.value(15), 100.0)),
+        ]
+        kind = "sleep_stats"
+    elif message == FIT_HRV_SUMMARY_GLOBAL_MESSAGE:
+        values = [
+            ("weekly_average_ms", _scaled_fit_value(record.value(0), 128.0)),
+            ("last_night_average_ms", _scaled_fit_value(record.value(1), 128.0)),
+            ("last_night_5_min_high_ms", _scaled_fit_value(record.value(2), 128.0)),
+            ("baseline_low_upper_ms", _scaled_fit_value(record.value(3), 128.0)),
+            ("baseline_balanced_lower_ms", _scaled_fit_value(record.value(4), 128.0)),
+            ("baseline_balanced_upper_ms", _scaled_fit_value(record.value(5), 128.0)),
+            ("status", _enum_fit_value(record.value(6), _HRV_STATUS_NAMES)),
+        ]
+        kind = "hrv_summary"
+    elif message == FIT_HRV_VALUE_GLOBAL_MESSAGE:
+        values = [("value_ms", _scaled_fit_value(record.value(0), 128.0))]
+        kind = "hrv_value"
+    elif message == FIT_SKIN_TEMP_RAW_GLOBAL_MESSAGE:
+        values = [("deviation", record.value(1))]
+        kind = "skin_temperature_raw"
+    elif message == FIT_SKIN_TEMP_OVERNIGHT_GLOBAL_MESSAGE:
+        values = [
+            ("local_timestamp", record.value(0)),
+            ("average_deviation", record.value(1)),
+            ("average_7_day_deviation", record.value(2)),
+        ]
+        kind = "skin_temperature_overnight"
     else:
         return None
 
@@ -1022,12 +1177,24 @@ def _wellness_from_record(record: FitDataRecord) -> WellnessSample | None:
 
 
 def extract_wellness_samples(data: bytes) -> tuple[WellnessSample, ...]:
-    """Extract standard monitoring, sleep, HRV, stress, SpO2 and related samples."""
-    return tuple(
-        sample
-        for record in parse_fit_records(data)
-        if (sample := _wellness_from_record(record)) is not None
-    )
+    """Extract monitoring, sleep, HRV, stress, SpO2 and related samples."""
+    samples: list[WellnessSample] = []
+    last_monitoring_timestamp: int | None = None
+    for record in parse_fit_records(data):
+        timestamp_override = None
+        if record.global_message_number == FIT_MONITORING_GLOBAL_MESSAGE:
+            timestamp_override = record.timestamp
+            timestamp16 = record.value(26)
+            if timestamp_override is None and isinstance(timestamp16, int) and last_monitoring_timestamp is not None:
+                timestamp_override = last_monitoring_timestamp + (
+                    (timestamp16 - (last_monitoring_timestamp & 0xFFFF)) & 0xFFFF
+                )
+            if timestamp_override is not None:
+                last_monitoring_timestamp = timestamp_override
+        sample = _wellness_from_record(record, timestamp_override=timestamp_override)
+        if sample is not None:
+            samples.append(sample)
+    return tuple(samples)
 
 
 def wellness_sample_dict(sample: WellnessSample) -> dict[str, Any]:

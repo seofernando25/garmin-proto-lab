@@ -14,7 +14,7 @@ Open-source interoperability implementation of Garmin's watch-facing GFDI protoc
 - Smart protobuf 5043/5044/5045 and FileAccess service fields 1–26 used by the recovered schema
 - MultiLink registration and the MLR reliable transport: 64-value sequence space, cumulative ACKs, 32→63 send window, 10 ms deferred ACK, five-packet ACK threshold, RTT/RTO estimation and retransmission backoff
 - FileAccess pagination, pull/resume, transfer status, cancellation, truncated-MD5 verification, zlib transfer, file-change notifications and control operations
-- activity/monitoring/sleep classification, FIT header/File ID/full-file CRC validation, and standard activity session/lap/sample and wellness decoding
+- activity/monitoring/sleep/metrics/HRV/skin-temperature classification, FIT header/File ID/full-file CRC validation, and activity/wellness decoding
 - persistent `fitness-sync` workflow with resumable `.part` files and private file permissions
 
 ## Quick start

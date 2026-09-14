@@ -54,7 +54,7 @@ Two watch-to-host fitness paths are implemented.
 
 The legacy path uses Supported File Types 5031, Directory Filter 5007, directory index 0, Download File 5002 and File Data 5004/5054. Data type 128 plus FIT subtype identifies activity/health objects; the downloaded FIT File ID is checked against the directory subtype.
 
-The next-generation path uses Configuration flag 90 and Smart FileAccess extension 43. Static handler selection confirms peer flag 90, not flag 95, decides whether Garmin creates the Sync2/FileAccess manager; flag 95 only enables the optional feature-capability query. The recovered service schema contains fields 1–26 for pull/push, transfer status, priority changes, listing, notifications, delete/modify flags, cancellation, resource/sync notifications, software part numbers and checksums. Fitness sync agents identify `FIT_TYPE_4` activity, `FIT_TYPE_32` monitoring and `FIT_TYPE_49` sleep, plus the other modeled health FIT types.
+The next-generation path uses Configuration flag 90 and Smart FileAccess extension 43. Static handler selection confirms peer flag 90, not flag 95, decides whether Garmin creates the Sync2/FileAccess manager; flag 95 only enables the optional feature-capability query. The recovered service schema contains fields 1–26 for pull/push, transfer status, priority changes, listing, notifications, delete/modify flags, cancellation, resource/sync notifications, software part numbers and checksums. Fitness sync agents identify `FIT_TYPE_4` activity, `FIT_TYPE_32` monitoring and `FIT_TYPE_49` sleep. Public Garmin-ecosystem cross-validation also preserves `FIT_TYPE_44` biometric/metrics, `FIT_TYPE_68` HRV status, `FIT_TYPE_70` HSA and `FIT_TYPE_73` skin-temperature files for local extraction.
 
 `GetItemChecksum` result method `TRUNCATED_MD5` is the first eight MD5 digest bytes interpreted as a little-endian uint64 and serialized as protobuf fixed64.
 
@@ -82,6 +82,8 @@ The extractor validates FIT header signature/size/header CRC, parses File ID glo
 `fitness-sync` writes incoming clear bytes to mode-`0600` `.part` files, resumes a subsequent FileAccess pull at the saved byte length, then atomically renames the verified file. Output directories are mode `0700`. A valid already-complete file is reused without another download.
 
 For local interpretation, the public Garmin FIT Python SDK profile at revision `f0d86b18195dbdf9c5b2f135aad5d6ae541f5fbb` (FIT Profile 21.214.0) was used as a field-profile cross-reference. The runtime now projects standard activity and wellness messages—including weight/body composition, blood pressure, monitoring, HRV, resting heart rate, stress, SpO2, sleep levels, respiration rate, and Body Battery—while preserving the raw numeric FIT fields. The SDK is not a runtime dependency.
+
+Gadgetbridge revision `a0948ee1cbc2a870f91d313f8e37df5f524465f7` supplies the public interoperability map for Garmin-specific physiological-metrics, sleep-stats/raw, HRV-status/value and skin-temperature FIT messages. The local decoder projects those fields, reconstructs monitoring `timestamp16`, and still retains raw numeric records.
 
 ## Hardware verification queue
 

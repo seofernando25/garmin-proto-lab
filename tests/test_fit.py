@@ -57,10 +57,22 @@ def test_fit_header_and_activity_file_id_inspection() -> None:
 def test_directory_subtype_classification_for_activity_health() -> None:
     assert classify_directory_fit_subtype(128, 4) is FitFileType.ACTIVITY
     assert classify_directory_fit_subtype(128, 15) is FitFileType.MONITORING_A
+    assert classify_directory_fit_subtype(128, 20) is FitFileType.ACTIVITY_SUMMARY
+    assert classify_directory_fit_subtype(128, 28) is FitFileType.MONITORING_DAILY
     assert classify_directory_fit_subtype(128, 32) is FitFileType.MONITORING_B
+    assert classify_directory_fit_subtype(128, 44) is FitFileType.BIOMETRIC_METRICS
+    assert classify_directory_fit_subtype(128, 68) is FitFileType.HRV_STATUS
+    assert classify_directory_fit_subtype(128, 70) is FitFileType.HSA
+    assert classify_directory_fit_subtype(128, 73) is FitFileType.SKIN_TEMPERATURE
     assert classify_directory_fit_subtype(128, 49) is FitFileType.SLEEP_DATA
     assert is_activity_or_health_subtype(128, 4)
+    assert is_activity_or_health_subtype(128, 20)
+    assert is_activity_or_health_subtype(128, 28)
     assert is_activity_or_health_subtype(128, 49)
+    assert is_activity_or_health_subtype(128, 44)
+    assert is_activity_or_health_subtype(128, 68)
+    assert is_activity_or_health_subtype(128, 70)
+    assert is_activity_or_health_subtype(128, 73)
     assert not is_activity_or_health_subtype(128, 5)
     assert classify_directory_fit_subtype(5, 4) is None
     assert classify_directory_fit_subtype(128, 222) == 222
@@ -87,13 +99,25 @@ def test_fit_integrity_and_truncation_fail_closed() -> None:
 
 def test_next_gen_fit_data_type_name_classification() -> None:
     assert fit_file_type_from_data_type_name("FIT_TYPE_4") is FitFileType.ACTIVITY
+    assert fit_file_type_from_data_type_name("FIT_TYPE_20") is FitFileType.ACTIVITY_SUMMARY
+    assert fit_file_type_from_data_type_name("FIT_TYPE_28") is FitFileType.MONITORING_DAILY
     assert fit_file_type_from_data_type_name("FIT_TYPE_32") is FitFileType.MONITORING_B
+    assert fit_file_type_from_data_type_name("FIT_TYPE_44") is FitFileType.BIOMETRIC_METRICS
+    assert fit_file_type_from_data_type_name("FIT_TYPE_68") is FitFileType.HRV_STATUS
+    assert fit_file_type_from_data_type_name("FIT_TYPE_70") is FitFileType.HSA
+    assert fit_file_type_from_data_type_name("FIT_TYPE_73") is FitFileType.SKIN_TEMPERATURE
     assert fit_file_type_from_data_type_name("FIT_TYPE_49") is FitFileType.SLEEP_DATA
     assert fit_file_type_from_data_type_name("FIT_TYPE_200") == 200
     assert fit_file_type_from_data_type_name("activity") is None
     assert is_activity_or_health_data_type_name("FIT_TYPE_4")
+    assert is_activity_or_health_data_type_name("FIT_TYPE_20")
+    assert is_activity_or_health_data_type_name("FIT_TYPE_28")
     assert is_activity_or_health_data_type_name("FIT_TYPE_32")
     assert is_activity_or_health_data_type_name("FIT_TYPE_49")
+    assert is_activity_or_health_data_type_name("FIT_TYPE_44")
+    assert is_activity_or_health_data_type_name("FIT_TYPE_68")
+    assert is_activity_or_health_data_type_name("FIT_TYPE_70")
+    assert is_activity_or_health_data_type_name("FIT_TYPE_73")
     assert not is_activity_or_health_data_type_name("FIT_TYPE_35")
 
 
