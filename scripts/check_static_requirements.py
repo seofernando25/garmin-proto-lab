@@ -95,7 +95,7 @@ def main() -> int:
     protocol_native_hits = native.get("watch_protocol_namespace_hits", [])
     require(any("device/multilink/reliable" in hit.get("file", "") for hit in protocol_native_hits), "native boundary scan missing reliable MultiLink JNI path")
     static_map = text("evidence/static/STATIC_MAP.md")
-    for sid in ("S-0003", "S-0004", "S-0005", "S-0006", "S-0007", "S-0008", "S-0009", "S-0011", "S-0012"):
+    for sid in ("S-0003", "S-0004", "S-0005", "S-0006", "S-0007", "S-0008", "S-0009", "S-0011", "S-0012", "S-0019", "S-0020", "S-0021", "S-0022", "S-0023", "S-0024"):
         require(sid in static_map, f"static evidence map missing {sid}")
 
     if errors:

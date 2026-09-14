@@ -10,6 +10,7 @@ from garmin_proto_lab.session import (
     SessionAction,
     SessionError,
     SessionPhase,
+    requires_system_bond,
 )
 
 RECORD = PairingRecord(bytes(range(16)), b"\x12\x34", bytes(range(8)))
@@ -136,3 +137,18 @@ def test_file_pairing_store_persists_hashed_device_key_with_strict_mode(tmp_path
 
     store.delete("AA:BB:CC:DD:EE:FF")
     assert store.load("AA:BB:CC:DD:EE:FF") is None
+
+
+def test_system_bond_policy_matches_fresh_and_persisted_garmin_auth() -> None:
+    store = MemoryPairingStore()
+    assert requires_system_bond(store, "device-a") is True
+    store.save("device-a", RECORD)
+    assert requires_system_bond(store, "device-a") is False
+    assert requires_system_bond(store, "device-a", force=True) is True
+
+
+def test_system_bond_policy_allows_forcing_fresh_garmin_auth() -> None:
+    store = MemoryPairingStore()
+    assert requires_system_bond(store, "device-a", force_garmin_auth=True) is False
+    with pytest.raises(SessionError, match="mutually exclusive"):
+        requires_system_bond(store, "device-a", force=True, force_garmin_auth=True)

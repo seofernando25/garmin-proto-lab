@@ -348,6 +348,17 @@ class GarminClient:
     def peer_configuration(self) -> Configuration | None:
         return self.handshake.peer_configuration
 
+    @property
+    def peer_supports_file_access(self) -> bool:
+        """Return whether the watch advertises Sync2/FileAccess Configuration bit 90."""
+        peer = self.peer_configuration
+        return peer is not None and FILE_ACCESS_CONFIGURATION_FLAG in peer.effective_flags()
+
+    @property
+    def peer_supports_feature_capabilities(self) -> bool:
+        peer = self.peer_configuration
+        return peer is not None and FEATURE_CAPABILITIES_CONFIGURATION_FLAG in peer.effective_flags()
+
     async def sync_time(self, *, request_timeout: float = 5.0) -> None:
         peer = self.peer_configuration
         if peer is None:

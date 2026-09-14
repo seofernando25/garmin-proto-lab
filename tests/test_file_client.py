@@ -151,7 +151,7 @@ def test_directory_listing_supported_types_unknown_header_and_fallback() -> None
         assert listing.filter_supported is True
         assert listing.directory.header16 == header
         assert listing.files[0].entry.file_index == 77
-        assert listing.files[0].entry.unknown_6 == 0xA5
+        assert listing.files[0].entry.reserved_6 == 0xA5
         assert listing.files[0].type_name == "FIT_TYPE_4"
         assert link.requests[0] == (5007, b"\x01")
 

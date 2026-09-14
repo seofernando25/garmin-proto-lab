@@ -1,8 +1,7 @@
 """Async MultiLink control/data channel over the existing BLE backend.
 
-This is intentionally a narrow implementation of the statically recovered
-registration/control plane. It does not claim hardware compatibility until a
-watch trace validates characteristic choice, client ID and reliable data flow.
+Implements characteristic selection, control registration, GFDI service 1,
+FileAccess transport-pipe services and raw handle routing.
 """
 from __future__ import annotations
 
@@ -17,6 +16,7 @@ from .multilink import (
     COMMAND_CLOSE_HANDLE_RESPONSE,
     COMMAND_REGISTER_RESPONSE,
     FILE_TRANSFER_PIPE_SERVICE_IDS,
+    GFDI_SERVICE_ID,
     MULTILINK_SERVICE_UUID,
     REGISTRATION_SERVICE_ID,
     CloseAllRequest,
@@ -46,6 +46,30 @@ class MultiLinkService:
     revision: int
 
 
+@dataclass(frozen=True, slots=True)
+class MultiLinkVersion:
+    major: int
+    minor: int
+    micro: int
+
+
+@dataclass(frozen=True, slots=True)
+class MultiLinkProductInfo:
+    product_number: int
+    firmware_version: int | None = None
+    unit_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MultiLinkRegistrationInfo:
+    supported_services: frozenset[int] | None
+    advertising_service_data: bytes | None
+    version: MultiLinkVersion | None
+    product: MultiLinkProductInfo | None
+    identity_address: bytes | None
+    service_revisions: dict[int, int]
+
+
 @dataclass(slots=True)
 class MultiLinkClient:
     backend: BleBackend
@@ -56,6 +80,12 @@ class MultiLinkClient:
     notify_uuid: UUID | None = None
     write_uuid: UUID | None = None
     registration: MultiLinkService | None = None
+    supported_services: frozenset[int] | None = None
+    advertising_service_data: bytes | None = None
+    multi_link_version: MultiLinkVersion | None = None
+    product_info: MultiLinkProductInfo | None = None
+    identity_address: bytes | None = None
+    service_revisions: dict[int, int] = field(default_factory=dict)
     invalid_handles: asyncio.Queue[int] = field(default_factory=asyncio.Queue)
     _pending: dict[tuple[int, int], asyncio.Future[object]] = field(default_factory=dict)
     _raw_queues: dict[int, asyncio.Queue[bytes]] = field(default_factory=dict)
@@ -80,6 +110,132 @@ class MultiLinkClient:
             await self.backend.subscribe(notify_uuid, self._on_notification)
             self._subscribed.add(notify_uuid)
 
+    @staticmethod
+    def _parse_supported_services_payload(payload: bytes) -> frozenset[int]:
+        if len(payload) < 2:
+            raise MultiLinkClientError("MultiLink service-list info page is truncated")
+        if payload[0] == 0xFF:
+            raise MultiLinkClientError("MultiLink service-list info page is unsupported")
+        if payload[0] != 0:
+            raise MultiLinkClientError(f"unexpected MultiLink info page {payload[0]}")
+        services: set[int] = set()
+        for byte_index, value in enumerate(payload[1:]):
+            for bit in range(8):
+                if value & (1 << bit):
+                    services.add(byte_index * 8 + bit)
+        return frozenset(services)
+
+    async def _query_registration_info(self, request: bytes, *, expected_page: int) -> bytes:
+        registration = self.registration
+        if registration is None:
+            raise MultiLinkClientError("registration service is not open")
+        if registration.reliable:
+            raise MultiLinkClientError("registration service must use the non-reliable control channel")
+        await self.send_raw(bytes((registration.handle,)) + bytes(request))
+        raw = await self.recv_raw(registration.handle, timeout=self.timeout)
+        if not raw or raw[0] != registration.handle:
+            raise MultiLinkClientError("MultiLink info response arrived on the wrong handle")
+        payload = raw[1:]
+        if not payload:
+            raise MultiLinkClientError("MultiLink info response is empty")
+        if payload[0] not in (expected_page, 0xFF):
+            raise MultiLinkClientError(
+                f"MultiLink info response page {payload[0]} does not match request {expected_page}"
+            )
+        return payload
+
+    async def query_supported_services(self) -> frozenset[int]:
+        payload = await self._query_registration_info(b"\x00", expected_page=0)
+        services = self._parse_supported_services_payload(payload)
+        self.supported_services = services
+        return services
+
+    async def query_advertising_service_data(self) -> bytes | None:
+        payload = await self._query_registration_info(b"\x01", expected_page=1)
+        if payload[0] == 0xFF:
+            return None
+        value = bytes(payload[1:])
+        self.advertising_service_data = value
+        return value
+
+    async def query_multi_link_version(self) -> MultiLinkVersion | None:
+        payload = await self._query_registration_info(b"\x02", expected_page=2)
+        if payload[0] == 0xFF:
+            return None
+        if len(payload) < 2:
+            raise MultiLinkClientError("MultiLink version response is truncated")
+        # Garmin parses response bytes as micro, minor, major. Older versions
+        # may return only the micro byte.
+        value = MultiLinkVersion(
+            payload[3] if len(payload) >= 4 else 0,
+            payload[2] if len(payload) >= 3 else 0,
+            payload[1],
+        )
+        self.multi_link_version = value
+        return value
+
+    async def query_product_info(self) -> MultiLinkProductInfo | None:
+        payload = await self._query_registration_info(b"\x03", expected_page=3)
+        if payload[0] == 0xFF:
+            return None
+        if len(payload) < 3:
+            raise MultiLinkClientError("MultiLink product-info response is truncated")
+        product = int.from_bytes(payload[1:3], "little")
+        firmware = int.from_bytes(payload[3:5], "little") if len(payload) >= 5 else None
+        unit_id = int.from_bytes(payload[5:9], "little") if len(payload) >= 9 else None
+        value = MultiLinkProductInfo(product, firmware, unit_id)
+        self.product_info = value
+        return value
+
+    async def query_identity_address(self) -> bytes | None:
+        payload = await self._query_registration_info(b"\x04", expected_page=4)
+        if payload[0] == 0xFF:
+            return None
+        value = bytes(payload[1:])
+        self.identity_address = value
+        return value
+
+    async def query_registration_info(self) -> MultiLinkRegistrationInfo:
+        if self.supported_services is None:
+            await self.query_supported_services()
+        await self.query_advertising_service_data()
+        await self.query_multi_link_version()
+        await self.query_product_info()
+        await self.query_identity_address()
+        return MultiLinkRegistrationInfo(
+            self.supported_services,
+            self.advertising_service_data,
+            self.multi_link_version,
+            self.product_info,
+            self.identity_address,
+            dict(self.service_revisions),
+        )
+
+    async def query_service_revision(self, service_id: int) -> int | None:
+        if not 0 <= service_id <= 0xFFFF:
+            raise MultiLinkClientError("service ID must fit uint16")
+        payload = await self._query_registration_info(
+            b"\x05" + service_id.to_bytes(2, "little"),
+            expected_page=5,
+        )
+        if payload[0] == 0xFF:
+            return None
+        if len(payload) < 4:
+            raise MultiLinkClientError("MultiLink service-revision response is truncated")
+        returned_id = int.from_bytes(payload[1:3], "little")
+        if returned_id != service_id:
+            raise MultiLinkClientError("MultiLink service-revision response ID does not match request")
+        status = payload[3]
+        if status == 1:
+            return None
+        if status != 0:
+            raise MultiLinkClientError(f"MultiLink service-revision status {status}")
+        if len(payload) < 5:
+            raise MultiLinkClientError("MultiLink service-revision response omitted revision")
+        revision = payload[4]
+        self.service_revisions[service_id] = revision
+        return revision
+
     async def initialize(self) -> MultiLinkService:
         service = self._multilink_service()
         characteristic_uuids = frozenset(characteristic.uuid for characteristic in service.characteristics)
@@ -100,6 +256,8 @@ class MultiLinkClient:
                         response.reliable,
                         response.revision,
                     )
+                    if response.revision >= 1:
+                        await self.query_supported_services()
                     return self.registration
                 if response.status is RegisterStatus.ALREADY_IN_USE and response.alternate_characteristic is not None:
                     alternate = response.alternate_characteristic
@@ -119,6 +277,8 @@ class MultiLinkClient:
                             retry.reliable,
                             retry.revision,
                         )
+                        if retry.revision >= 1:
+                            await self.query_supported_services()
                         return self.registration
                 last_error = MultiLinkClientError(f"registration service failed with status {int(response.status)}")
             except Exception as exc:
@@ -152,6 +312,33 @@ class MultiLinkClient:
         if result.connection_id != self.connection_id or result.service_id != service_id:
             raise MultiLinkClientError("MultiLink register response identifiers do not match request")
         return result
+
+    async def open_gfdi_service(self, *, prefer_reliable: bool = True) -> MultiLinkService:
+        """Register logical GFDI service 1 on the selected MultiLink channel.
+
+        Garmin Connect requests MLR when its reliable engine is available and
+        can also register the service without reliability. Accept either mode
+        returned by the peer and retry without the reliability request when the
+        first registration is rejected.
+        """
+        supported = self.supported_services
+        if supported is not None and GFDI_SERVICE_ID not in supported:
+            raise MultiLinkClientError("device MultiLink service list does not include GFDI service 1")
+        attempts = (True, False) if prefer_reliable else (False,)
+        errors: list[str] = []
+        for request_reliable in attempts:
+            response = await self.register_service(GFDI_SERVICE_ID, request_reliable=request_reliable)
+            if response.status is RegisterStatus.SUCCESS and response.handle is not None:
+                return MultiLinkService(
+                    GFDI_SERVICE_ID,
+                    response.handle,
+                    response.reliable,
+                    response.revision,
+                )
+            errors.append(
+                f"reliable={int(request_reliable)} status={int(response.status)}"
+            )
+        raise MultiLinkClientError("GFDI MultiLink registration failed: " + "; ".join(errors))
 
     async def open_file_transfer_service(self) -> MultiLinkService:
         errors: list[str] = []

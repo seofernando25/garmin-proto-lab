@@ -6,6 +6,7 @@ zero runtime dependencies and can be tested without Bluetooth or Bleak.
 from __future__ import annotations
 
 import inspect
+import sys
 from typing import Any
 from uuid import UUID
 
@@ -39,7 +40,7 @@ def _uuid(value: str | UUID) -> UUID:
 
 
 class BleakBackend(BleBackend):
-    """Best-effort cross-platform BLE backend for the hardware test plan.
+    """Cross-platform BLE backend for the hardware test plan.
 
     Pairing and explicit ATT-MTU requests are not uniformly exposed by Bleak.
     Where a public backend method exists it is used; otherwise the adapter
@@ -47,8 +48,9 @@ class BleakBackend(BleBackend):
     pretending success.
     """
 
-    def __init__(self, *, assume_bonded: bool = False) -> None:
+    def __init__(self, *, assume_bonded: bool = False, bluez_agent: bool = True) -> None:
         self.assume_bonded = assume_bonded
+        self.bluez_agent = bluez_agent
         self._client: Any = None
         self._paired_by_us = False
         self._write_without_response: dict[UUID, bool] = {}
@@ -103,13 +105,48 @@ class BleakBackend(BleBackend):
 
             asyncio.get_running_loop().create_task(result)
 
-    async def connect(self, device: DiscoveredDevice) -> None:
+    async def _connect(self, device: DiscoveredDevice, *, pair: bool) -> None:
         BleakClient, _BleakScanner = _load_bleak()
-        self._client = BleakClient(device.address, disconnected_callback=self._on_disconnected)
-        connected = await self._client.connect()
+        self._client = BleakClient(
+            device.address,
+            disconnected_callback=self._on_disconnected,
+            pair=pair,
+            timeout=60 if pair else 30,
+        )
+
+        async def run_connect():
+            result = self._client.connect()
+            if inspect.isawaitable(result):
+                return await result
+            return result
+
+        try:
+            if pair and sys.platform.startswith("linux") and self.bluez_agent:
+                from .bluez_agent import BluezPairingAgent
+                async with BluezPairingAgent():
+                    connected = await run_connect()
+            else:
+                connected = await run_connect()
+        except BaseException:
+            client, self._client = self._client, None
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+            raise
         if connected is False:
             self._client = None
             raise TransportError("Bleak connect returned false")
+        if pair:
+            self._paired_by_us = True
+
+    async def connect(self, device: DiscoveredDevice) -> None:
+        await self._connect(device, pair=False)
+
+    async def connect_with_pairing(self, device: DiscoveredDevice) -> None:
+        """Pair before GATT service discovery, matching BlueZ/Bleak semantics."""
+        await self._connect(device, pair=True)
 
     async def disconnect(self) -> None:
         client, self._client = self._client, None
@@ -120,19 +157,55 @@ class BleakBackend(BleBackend):
             await client.disconnect()
 
     async def is_bonded(self) -> bool:
-        return self.assume_bonded or self._paired_by_us
+        if self.assume_bonded or self._paired_by_us:
+            return True
+        if sys.platform.startswith("linux") and self._client is not None:
+            backend = getattr(self._client, "_backend", None)
+            device_path = getattr(backend, "_device_path", None)
+            if device_path:
+                try:
+                    from bleak.backends.bluezdbus.manager import get_global_bluez_manager
+                    manager = await get_global_bluez_manager()
+                    return bool(manager.is_paired(device_path))
+                except Exception:
+                    return False
+        return False
 
     async def create_bond(self) -> None:
         client = self.client
         pair = getattr(client, "pair", None)
         if pair is None:
             raise TransportError("this Bleak platform/backend does not expose pairing")
-        result = pair()
-        if inspect.isawaitable(result):
-            result = await result
+
+        async def run_pair():
+            result = pair()
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+
+        if sys.platform.startswith("linux") and self.bluez_agent:
+            from .bluez_agent import BluezPairingAgent
+            async with BluezPairingAgent():
+                result = await run_pair()
+        else:
+            result = await run_pair()
         if result is False:
             raise TransportError("Bleak pairing returned false")
         self._paired_by_us = True
+
+    async def remove_bond(self, device: DiscoveredDevice) -> None:
+        """Remove the OS Bluetooth pairing record for a controlled fresh-pair test."""
+        BleakClient, _BleakScanner = _load_bleak()
+        if self._client is not None:
+            await self.disconnect()
+        client = BleakClient(device.address)
+        unpair = getattr(client, "unpair", None)
+        if unpair is None:
+            raise TransportError("this Bleak platform/backend does not expose unpairing")
+        result = unpair()
+        if inspect.isawaitable(result):
+            await result
+        self._paired_by_us = False
 
     async def discover_services(self):
         client = self.client

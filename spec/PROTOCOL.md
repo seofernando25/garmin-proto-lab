@@ -110,9 +110,15 @@ Observed characteristic family:
 
 All use the Garmin base suffix `-667B-11E3-949A-0800200C9A66`. Payload grammars remain outside the v1 required workflow unless needed by the target watch.
 
-### P-0013 — Multilink UUIDs (`SUPPORTED`, S-0005)
+### P-0013 — MultiLink UUIDs (`SUPPORTED`, S-0005/S-0020)
 
-Multilink service `6A4E2800-667B-11E3-949A-0800200C9A66`, with observed characteristic `6A4E2803-667B-11E3-949A-0800200C9A66`. Semantics beyond registration remain unresolved.
+MultiLink service is `6A4E2800-667B-11E3-949A-0800200C9A66`. Data characteristic candidates are `6A4E2810..2819`; each primary maps to `6A4E2820..2829` for the paired write characteristic when that characteristic is present. Registration/control and MLR framing are specified in P-0701..P-0703.
+
+### P-0014 — GFDI over MultiLink service 1 (`SUPPORTED`, S-0025; T-0075)
+
+Garmin supports two physical routes for the same logical GFDI service. If a dedicated GFDI service/characteristic pair exists, it is used directly. Otherwise the MultiLink subscriber registers logical service ID `1` and exposes the normal GFDI read/write UUIDs to the upper GFDI stack through a shim. With the reliable engine available, registration requests MLR; without it, the same service can use a one-byte non-reliable MultiLink handle.
+
+The compatibility transport follows the same route selection: direct GFDI first, then MultiLink service `1`. A reliable GFDI handle uses P-0702/P-0703 MLR and forwards each accepted payload fragment into the ordinary COBS byte-stream decoder. A non-reliable handle uses `handle:u8 | GFDI stream bytes`. This route is transparent to the frame/authentication/semantic layers.
 
 ---
 
@@ -134,7 +140,7 @@ Encoding is standard Consistent Overhead Byte Stuffing. Independent tests includ
 
 ### P-0102 — Encoded-packet bound (`SUPPORTED`, S-0006)
 
-The recovered reader uses a bounded encoded-packet buffer; a 16 KiB default appears in the static path. Compatibility code must impose a finite bound and fail closed on overlength frames rather than allocating without limit.
+The recovered reader initializes a 16 KiB encoded-packet buffer. The implementation applies a finite frame bound and rejects overlength frames before allocation growth.
 
 ---
 
@@ -218,7 +224,7 @@ The independent message link allocates one of 32 five-bit transaction IDs, encod
 
 ### P-0200 — Active cipher (`SUPPORTED`, S-0007; T-0030)
 
-The active advertised authentication algorithm in this build is XXTEA. The static enum contains an AES-128 value, but the active supported-algorithm array contains XXTEA only. Do not advertise AES unless a future target/trace proves it is negotiated.
+The active authentication algorithm in this build is XXTEA. The static enum contains AES-128, but the active supported-algorithm array contains XXTEA only; the implementation advertises XXTEA only.
 
 XXTEA uses 32-bit little-endian words, a 16-byte key and delta `0x9E3779B9`. The independent implementation was cross-checked against the published Wheeler/Needham `btea` formulation compiled with `uint32_t`.
 
@@ -239,6 +245,8 @@ XXTEA uses 32-bit little-endian words, a 16-byte key and delta `0x9E3779B9`. The
 | 5111 | Secure Session |
 | 5112 | Out-of-Band Passkey Data |
 
+In Garmin Connect 5.29, the authentication manager registers inbound handlers for 5101, 5103, 5107, 5108, 5109, 5111 and 5112. Messages 5102/5104/5105/5106 are host-initiated requests whose replies are correlated by the request layer. ID 5110 exists only in the message-name mapping: a full source search contains no sender or receiver call site for Passkey Redisplay in this build, so it is not part of the implemented pairing state machine.
+
 ### P-0202 — 5101 negotiation (`SUPPORTED`, S-0007)
 
 Incoming 5101 requires at least 5 bytes. Bytes 1..4 carry the peer algorithm bit mask. The host response data conveys:
@@ -251,7 +259,7 @@ When persistent long-term key material, encrypted diversifier and random number 
 
 ### P-0203 — Passkey modes and OOB distribution (`SUPPORTED`, S-0007; T-0039)
 
-5103 contains a pairing timeout and passkey mode. Recovered mode values:
+5103 contains a pairing timeout in bytes 1–2, reserved bytes 3–4, and passkey mode in byte 5. Recovered mode values:
 
 - 0: visible/user-entered passkey,
 - 1: "just works" using a 16-byte all-zero passkey,
@@ -314,9 +322,7 @@ Host SKD bytes are generated randomly. 5109 verifies the resulting session key t
 
 ### P-0209 — Secure-session initialization (`SUPPORTED`, S-0007)
 
-5111 establishes per-direction diversifier/initialization values. The static path decrypts a 16-byte body using the session key, obtains the device direction value, and returns a 16-byte response containing host-generated values. The 5111 response itself is not wrapped in the newly installed outer secure packet; wrapping begins afterward.
-
-Exact user-visible pairing order and watch UI timing must be confirmed dynamically before marking the session state machine complete.
+5111 establishes per-direction initialization values. The decrypted 16-byte request uses byte 0 as the selector and bytes 8–11 as the device IV; bytes 1–7 and 12–15 are reserved. The response copies byte 0, leaves bytes 1–7 zero, generates host IV bytes 8–11 and random bytes 12–15, encrypts that block with the session key, and sends it in the plaintext GFDI acknowledgement. Secure outer wrapping begins only after that acknowledgement is written.
 
 ### P-0210 — Outbound secure packet (`SUPPORTED`, S-0007; T-0035)
 
@@ -349,7 +355,7 @@ Inbound secure packets:
 6. read the inner GFDI length at decrypted offset 8,
 7. return exactly that inner frame for ordinary GFDI validation.
 
-Equal counters are not rejected by the recovered comparison (`<`, not `<=`); this should be tested on-device before choosing stricter replay policy.
+Equal counters are accepted by the recovered comparison (`<`, not `<=`); the implementation matches that policy.
 
 ---
 
@@ -379,7 +385,19 @@ State/transition table used by the independent engine:
 
 Persistence boundary: only LTK/EDIV/RAND are long-lived. STK, host/device randoms, session key, SKD values, secure-session IVs and packet counters are connection-scoped and are cleared/recreated. The reference event log never records these secret byte values.
 
-This state model is `SUPPORTED`, not `CONFIRMED`: exact watch prompt timing, which failure branches cause a disconnect versus a retry, and persistence across phone/watch reboot require D-PLAN-0002/D-PLAN-0003.
+This state model is `SUPPORTED`. Hardware acceptance of watch prompt timing, disconnect/retry behavior and reboot persistence is recorded by D-PLAN-0002/D-PLAN-0003.
+
+### P-0213 — System-bond and Garmin-auth pairing routes (`SUPPORTED`, S-0021/S-0027; T-0037/T-0074)
+
+Android/BlueZ bonding and Garmin GFDI authentication are separate authentication routes. `DeviceConfiguration.m55705b()` is true when LTK, EDIV, or RAND is already present.
+
+For a fresh app pairing record with no LTK/EDIV/RAND, Garmin Connect passes `requiresBond=true`; the BLE layer performs the OS Bluetooth bond before GFDI initialization. At GFDI initialization `DefaultAuthDelegate.isGarminAuthAllowed()` returns false for a bonded remote (except the explicit Android-manufacturer `VIVO` special case). `aq2/C2861i` therefore installs `bq2/C4587y` StubAuthHandler instead of the 5101–5111 AuthHandler. StubAuth registers 5101 only to reject it, and otherwise completes authentication setup with null LTK/session values. Thus the normal system-bond route does **not** also run proprietary Garmin authentication.
+
+The proprietary Garmin-auth route is used while the remote is not system-bonded. It runs P-0201..P-0212 and persists LTK/EDIV/RAND. Once that record exists, the connection manager registers it in `AuthRegistry`, opens the pairing connection with `requiresBond=false`, and uses 5102 for persistent reconnect.
+
+The client implements both routes. With no GFDI record, default `pair` requests the OS bond; after handshake it accepts StubAuth/no-secure-session as the expected bonded result. With saved LTK/EDIV/RAND it skips a new bond and runs Garmin-auth reconnect. `--system-bond` forces the bonded route; `--garmin-auth` forces the unbonded 5101–5111 route. These overrides are mutually exclusive. On Linux the BlueZ bond path installs a temporary KeyboardDisplay Agent1 so terminal passkey/confirmation requests are actionable.
+
+The bond state uses a 45-second timeout and two attempts, matching the one automatic retry in the pairing strategy. On successful proprietary long-term authentication, `AuthRegistry` persists/exposes exactly LTK (16 bytes), EDIV (2 bytes), and RAND (8 bytes). STK, session key, SKD, IVs, and packet counters remain connection-scoped.
 
 ---
 
@@ -418,9 +436,11 @@ The host's 5024 acknowledgement data constructs a host identity record with a se
 
 Compatibility code should initially minimize identity fields and reproduce only fields proven necessary by a target watch, rather than impersonating a Garmin app/device string unnecessarily.
 
-### P-0303 — Configuration 5050 (`SUPPORTED`, S-0008)
+### P-0303 — Configuration 5050 and host fitness capability set (`SUPPORTED`, S-0008/S-0028; T-0043/T-0079)
 
-Configuration is represented as a length-prefixed bitset/capability vector. The watch and host exchange/acknowledge these capability bits during handshake. Bit semantics should be enabled only when independently identified; unknown bits are preserved.
+Configuration is represented as a length-prefixed bitset/capability vector. The watch and host exchange/acknowledge these capability bits during handshake. Unknown peer bits are preserved.
+
+Garmin Connect constructs its host Configuration from `client_config.xml` capability ordinals plus each active handler's configuration set. The direct pairing/fitness client advertises only recovered capabilities used by implemented workflows: Connect Mobile FIT Link 0, Sync 3, Device Initiates Sync 4, Host Initiated Sync Requests 5, Request Pair Flow 64 and Current Time Request Support 71. Fitness sync additionally advertises Explicit Archive 29 and bit 90, which is `SYNC_2` in `SupportedCapability` and is also contributed by `FileTransferManager` to gate next-generation FileAccess. Notification workflows add GNCS 6. Peer bit 95 gates the Smart/Core FeatureCapabilities request; it is not a host application capability from `SupportedCapability`.
 
 ### P-0304 — Queued Download 5027 (`SUPPORTED`, S-0008/S-0015; T-0044)
 
@@ -485,7 +505,7 @@ A File Ready announcement has at least 16 bytes:
 0..1    file index, uint16 LE
 2       data type
 3..5    three-byte identifier
-6       UNKNOWN byte, preserved
+6       RESERVED byte, preserved
 7       file flags
 8..11   file size, uint32 LE
 12..15  timestamp/value, uint32 LE
@@ -521,12 +541,12 @@ The recovered host request is 14 bytes:
 uint16 LE file_index
 uint32 LE data_offset = 0 in the observed initial request
 uint8     request/version flag = 1 in the observed path
-uint16 LE field = 0 in the observed initial request
-uint32 LE field = 0 in the observed initial request
+uint16 LE reserved = 0 in the recovered read task
+uint32 LE reserved = 0 in the recovered read task
 uint8     compression_requested (0/1)
 ```
 
-The two zero fields' precise names remain `UNKNOWN`; do not invent semantics before a resume trace or additional static proof.
+The recovered read task writes literal zero to both reserved fields on every Download File request and never branches on them. The implementation therefore fixes them to zero by default while preserving explicit codec fields for wire tests.
 
 Response status byte:
 
@@ -618,7 +638,7 @@ The downloaded directory starts with an opaque 16-byte header that this app path
 0..1    file index, uint16 LE
 2       data type
 3..5    three-byte identifier
-6       UNKNOWN_6, preserved
+6       RESERVED_6, preserved
 7       file flags
 8..11   size, uint32 LE
 12..15  timestamp/value, uint32 LE
@@ -626,7 +646,7 @@ The downloaded directory starts with an opaque 16-byte header that this app path
 
 The first identifier byte is exposed as subtype. Known file-flag bits are READ `0x80`, WRITE `0x40`, ERASE `0x20`, ARCHIVE `0x10`, APPEND `0x08`, CRYPTO `0x04`. Higher-level Garmin sync code only exposes directory records carrying READ and not ARCHIVE.
 
-Directory header bytes and UNKNOWN_6 are intentionally preserved without invented meaning.
+Directory header bytes are preserved raw. RESERVED_6 is preserved and the recovered path never branches on it.
 
 ### P-0408 — Archive and special file indexes (`SUPPORTED`, S-0016; T-0055)
 
@@ -658,6 +678,14 @@ This establishes the end-to-end generic file transport and removes the need to g
 Generated FIT-profile code in the package maps file type/subtype values including ACTIVITY=4, WEIGHT=9, BLOOD_PRESSURE=14, MONITORING_A=15, MONITORING_B=32 and SLEEP_DATA=49. For directory entries whose data type is the observed FIT family value 128, these subtype names can be used as static classification hints.
 
 The independent runtime does not rely solely on the directory hint. Its minimal FIT inspector validates the `.FIT` container header and walks definition/data records far enough to locate File ID (global message 0), field 0, whose enum value is the file type. A downloaded activity can therefore be cross-checked as subtype 4 in both the directory and the file content before exposing it semantically. Unknown FIT types remain numeric.
+
+The runtime also validates the trailing FIT file CRC before publishing a downloaded object.
+
+### P-0412 — Generic FIT records and activity/wellness projections (`SUPPORTED`, S-0017/S-0024/S-0029; T-0077/T-0080/T-0082)
+
+After the FIT container passes header and file CRC validation, definition records establish local-message layouts. The decoder preserves numeric global message and field identifiers, decodes standard FIT base types with the architecture declared by each definition, preserves developer-field bytes, and reconstructs compressed-timestamp headers from the previous timestamp plus the five-bit offset. No Garmin-private profile class is required to retain fields the application does not yet name.
+
+For standard FIT Record messages (global message 20), the semantic activity projection exposes timestamp, position latitude/longitude, altitude, heart rate, cadence, distance, speed/enhanced speed, power and temperature using the standard FIT scales. The public Garmin FIT Profile 21.214 additionally resolves semantic wellness projections for WEIGHT_SCALE (30), BLOOD_PRESSURE (51), MONITORING (55), HRV (78), MONITORING_INFO (103), HR (132), MONITORING_HR_DATA (211), STRESS_LEVEL (227), SPO2_DATA (269), SLEEP_LEVEL (275), RESPIRATION_RATE (297), and HSA_BODY_BATTERY_DATA (314), including the standard field scales and sleep/SpO2/activity enums. Timestamps use the Garmin/FIT epoch already used by the GFDI time layer. FIT base-type invalid sentinels map to null instead of fabricated measurements. The JSON projection retains every numeric record/field identifier, raw field bytes and developer bytes alongside these semantic values, so profile extensions are not discarded. Standard Session (18), Lap (19), and Activity (34) records are additionally projected into activity aggregates covering timers, distance, calories, speed, heart rate, cadence, power, ascent/descent, training effect, lap count, sport and sub-sport while retaining their raw source fields.
 
 ---
 
@@ -771,7 +799,7 @@ Messages 5043 (request) and 5044 (response) carry serialized protobuf bytes in i
 
 Maximum chunk data is `current GFDI payload limit - 14`. The eight-byte GFDI acknowledgement payload is `requestId:u16LE | offset:u32LE | failed:u8 | status:u8`. Status values are no-error 0, unknown request 100, duplicate packet 101, missing packet 102, exceeded protobuf length 103, parse error 200, and unknown protobuf message 201. Duplicate is transport-success; missing/length/parse/unknown are failures.
 
-Message 5045 carries the uint16 request ID. It cancels pending response state and is acknowledged by echoing the request ID. A failed/cancelled host request sends 5045 best-effort.
+Message 5045 carries the uint16 request ID. It cancels pending response state and is acknowledged by echoing the request ID. A failed or cancelled host request attempts 5045 cancellation; cancellation errors do not replace the originating request error.
 
 ### P-0601 — Smart extension envelope (`SUPPORTED`, S-0018; T-0062)
 
@@ -811,17 +839,39 @@ Core field 14 is an empty Connection Ready Notification carried in an incoming S
 
 ## Layer 9 — Next-generation FileAccess over MultiLink
 
-### P-0700 — FileAccess protobuf service (`SUPPORTED`, S-0019; T-0064/T-0065)
+### P-0700 — FileAccess protobuf service (`SUPPORTED`, S-0019/S-0023/S-0030; T-0064/T-0065/T-0070/T-0081)
 
-Legacy configuration flag 90 enables the next-generation FileAccess manager. Smart extension field 43 contains the FileAccess service and Core Feature Capabilities extension field 16 advertises FileAccess support. The host request advertises an empty capabilities message; optional server capabilities report push-bundle support, software-update-part support, truncated-MD5 support/size bound, and custom flags.
+Watch Configuration bit 90 is the runtime selector for FileAccess/Sync2. Bit 95 only gates the optional Core FeatureCapabilities exchange; a missing FileAccess capability extension does not disable FileAccess itself.
 
-Item List request/response are service fields 9/10. The first request can carry transaction ID, maximum count, excluded/requested flag UUIDs, included data types and requested metadata. A response session ID pages the same listing; a terminal response omits session ID and may include `next_transaction_id`. GDXML data-type strings can be sent once with a numeric string key and referenced by that key in later items/pages; the runtime keeps that table across a listing transaction. Pull request/response are fields 1/2 and select transport enum 0 (`MULTILINK_TRANSPORT_PIPE`).
+Legacy Configuration flag 90 enables the FileAccess manager. Smart extension field 43 contains one FileAccess `Service` message. Core Feature Capabilities extension field 16 carries FileAccess capabilities.
 
-Transfer Status request/response are fields 5/21. The device sends status for the negotiated transfer handle. A request with `failure_reason` indicates transfer failure; otherwise it is completion. The host delays its protobuf response until the data-path operation completes, then may return `next_transfer_priority`. Cancel Transfer request/response are fields 18/19; request field 1 is the transfer handle and response status 0/1 means success/unknown-transfer. Garmin treats both outcomes as an idempotent successful cleanup.
+Recovered service fields:
 
-Recovered fitness-facing data-type names used by higher sync agents include `FIT_TYPE_4` (activity), `FIT_TYPE_32` (monitoring) and `FIT_TYPE_49` (sleep). They are listing/filter names, not fixed watch file IDs.
+| Field | Message | Field | Message |
+|---:|---|---:|---|
+| 1 | Pull Item Request | 2 | Pull Item Response |
+| 3 | Push Item Request | 4 | Push Item Response |
+| 5 | Transfer Status Request | 21 | Transfer Status Response |
+| 6 | Priority Update Request | 7 | Priority Update Response |
+| 9 | Item List Request | 10 | Item List Response |
+| 11 | Item List Cancel Notification | 12 | Item Added Notification |
+| 13 | Delete Item Request | 14 | Delete Item Response |
+| 15 | Modify Flags Request | 16 | Modify Flags Response |
+| 17 | Item Updated Notification | 18 | Cancel Transfer Request |
+| 19 | Cancel Transfer Response | 20 | Resource Update Notification |
+| 22 | Sync Button Notification | 23 | Software Update Part Number Request |
+| 24 | Software Update Part Number Response | 25 | Get Item Checksum Request |
+| 26 | Get Item Checksum Response |  |  |
 
-### P-0701 — MultiLink GATT registration (`SUPPORTED`, S-0020; T-0066)
+Item List request/response fields support transaction/session IDs, maximum count, exclude/get flag UUIDs, included data types and modified-time metadata. A response `session_id` pages the same listing; the next request contains only that session ID. A terminal page omits `session_id` and can return `next_transaction_id`. GDXML data-type strings can be sent once with a string key and referenced by key on later pages; the client maintains that table across the transaction.
+
+Pull response selects transport enum 0 (`MULTILINK_TRANSPORT_PIPE`), returns a transfer handle and can return a compression window. Push uses the same transport selection plus a device-selected offset. Transfer Status request/response are fields 5/21 and close the negotiated transfer lifecycle. Cancel Transfer fields 18/19 return SUCCESS=0 or UNKNOWN_TRANSFER=1; both are idempotent cleanup success.
+
+Delete, priority, flag-modification and notification enums are modeled explicitly in `file_access_proto.py`. Unknown numeric enum values are preserved numerically.
+
+Recovered fitness-facing names include `FIT_TYPE_4` activity, `FIT_TYPE_32` monitoring and `FIT_TYPE_49` sleep; additional modeled FIT health types include weight, blood pressure and monitoring A.
+
+### P-0701 — MultiLink GATT registration and info pages (`SUPPORTED`, S-0020/S-0026; T-0066/T-0078)
 
 MultiLink service UUID is `6A4E2800-667B-11E3-949A-0800200C9A66`. Candidate data characteristics are `6A4E2810..2819`; paired write characteristics are `6A4E2820..2829` when present. Control packets begin with zero.
 
@@ -832,35 +882,117 @@ close handle:      00 02 | client_id:u64LE | service_id:u16LE | handle:u8
 close all:         00 05 | client_id:u64LE | 0000
 ```
 
-Register flag `0x02` requests a reliable service. Success status 0 returns `handle:u8`, optional flags (`bit0=reliable`) and optional revision. Statuses 1/2/3/4 are invalid-service, pending-auth, already-in-use and rejected. Status 3 can include an alternate characteristic. Registration service ID is 4. FileAccess transport-pipe services are `0x2018,0x4018,0x6018,0x8018,0xA018,0xC018,0xE018`.
+Register flag `0x02` requests a reliable service. Status 0 returns handle, optional flags (`bit0=reliable`) and optional revision. Statuses 1/2/3/4 are invalid-service, pending-auth, already-in-use and rejected. Status 3 can carry an alternate characteristic. Registration service ID is 4. FileAccess pipe service IDs are `0x2018,0x4018,0x6018,0x8018,0xA018,0xC018,0xE018`.
 
-The MultiLink `client_id` is an application identifier from Garmin's client configuration. An independent application must use its own stable nonzero identifier; it must not copy Garmin Connect's value.
+The MultiLink `client_id` is the GFDI client UUID serialized as uint64 LE. Garmin Connect's bundled `client_config.xml` sets it to `0x01`, and the MultiLink subscriber passes that value directly into the registration communicator (S-0026). The compatibility client therefore defaults to `0x01`; `--multilink-client-id` can override it for diagnostic comparisons.
 
-### P-0702 — MLR reliable packet header (`SUPPORTED`, S-0020; T-0067)
+### P-0702 — MLR reliable packet header (`SUPPORTED`, S-0020; T-0067/T-0071)
 
-A non-reliable packet is `handle:u8 | payload`, with handle below `0x80`. Reliable handles are `0x80..0x87` and add a two-byte header carrying six-bit sequence number `SN` and cumulative request/ACK number `RN`:
+Non-reliable MultiLink data is `handle:u8 | payload`, with handle below `0x80`. Reliable handles are `0x80..0x87` and use two bytes carrying six-bit sequence number `SN` and cumulative ACK/request number `RN`:
 
 ```text
 b0 = 0x80 | ((handle & 7) << 4) | (RN >> 2)
 b1 = ((RN & 3) << 6) | SN
-payload follows; capacity = max_write_length - 2
+payload follows
 ```
 
-The native packet-count formula is `(data_length + max_write_length - 3) // (max_write_length - 2)`. Four native self-test wire vectors are used as independent implementation tests: `05 01`, `d0 c2 ff`, `92 cd ff de a2`, and `ff ff 01 02 03`.
+Normal connections use 64 sequence values. Native mode `0xFF` returns a sequence count of 8 for formatter diagnostics; other nonzero modes return `0xFF`. Payload capacity is `max_write_length - 2` and packet count is `(data_length + max_write_length - 3) // (max_write_length - 2)`.
 
-Garmin's native engine implements adaptive retransmission/window behavior. The clean-room client currently uses a bounded sender and immediate cumulative ACKs; this conservative policy is `SUPPORTED` only as an offline implementation, not `CONFIRMED` on a watch.
+Native formatter self-test vectors used by the implementation tests are `05 01`, `d0 c2 ff`, `92 cd ff de a2`, and `ff ff 01 02 03`.
 
-### P-0703 — FileAccess transport-pipe read (`SUPPORTED`, S-0019/S-0020; T-0068)
+### P-0703 — MLR ARQ, ACK and retransmission state (`SUPPORTED`, S-0020; T-0071/T-0072)
 
-After a successful Pull response returns a transfer handle, the host opens a reliable FileAccess MultiLink service and sends a ten-byte configure blob:
+The normal reliable connection initializes:
+
+```text
+sequence modulus = 64
+send window      = 32 packets
+window maximum   = 63 packets
+initial RTO      = 1000 ms
+minimum RTO      = 500 ms
+maximum backoff  = 20000 ms
+```
+
+RN is a cumulative ACK of the next expected peer sequence. An advancing ACK removes all fully acknowledged packets and increments the send window by one through 63. The receiver increments a pending-ACK counter for received data and sends a standalone cumulative ACK after five data packets. The first unacknowledged receive starts a 10 ms deferred-ACK timer; expiry sends the ACK sooner. Any outbound reliable packet carries the current RN and therefore clears the pending standalone ACK.
+
+RTT estimation uses:
+
+```text
+alpha = 1/8
+beta  = 1/4
+RTTVAR <- beta*abs(previous_sRTT - sample) + (1-beta)*RTTVAR
+sRTT   <- alpha*sample + (1-alpha)*previous_sRTT
+RTO    = max(500 ms, sRTT + max(0.5*sRTT, 4*RTTVAR))
+```
+
+When multiple RTT samples arrive within one sample interval, alpha/beta are scaled by elapsed/sample, matching the native code. Retransmission timeout halves the send window through a floor of one, doubles RTO through 20 seconds, resets the send sequence to the unacknowledged base and retransmits from that base.
+
+A packet whose SN is not the current receive-next value is not delivered to the service. RN remains at the missing sequence so the sender retransmits the gap.
+
+### P-0704 — FileAccess transport-pipe pull, compression and resume (`SUPPORTED`, S-0019/S-0020/S-0024; T-0068/T-0073)
+
+After Pull returns a transfer handle, the host opens a reliable FileAccess MultiLink service and sends:
 
 ```text
 00 | direction:u8 | transfer_handle:u64LE
 ```
 
-Transport-pipe direction is **0 read, 1 write** (separate from the FileAccess `TransferDirection` enum, whose PULL value is 1). Configure response is at least three bytes: command/echo byte, general status, configure status; both statuses must be zero.
+Pipe direction is 0 read / 1 write. Configure response contains command/echo, general status and configure status. General status is 0 success, 1 unknown command, 2 invalid command data. When general status is success, configure status is 0 success, 1 unknown transfer handle, 2 unexpected transfer direction, 3 unexpected transfer size.
 
-The clean-room pull path defaults to no compression, ACKs reliable packets cumulatively, concatenates accepted data until the listed item size is reached, then waits for and answers the device Transfer Status request. Optional pull compression is modeled as a standard zlib stream because the recovered read wrapper uses Java `Inflater()`/`InflaterOutputStream`; the listed item size remains the decompressed size. Local transport/configuration failure sends best-effort Cancel Transfer before closing the MultiLink service. Native-equivalent adaptive MLR timers remain deferred until target-watch evidence requires them.
+Accepted MLR payload bytes are appended in sequence order until the listed clear item size is reached. A compressed Pull negotiates a zlib window and the receiver inflates the MLR payload stream; the FileAccess item size remains the clear/decompressed size. The transfer does not complete until the device's Transfer Status request is answered.
+
+Pull request field `offset` is a clear-file byte offset. Resume sends the saved clear prefix length as that offset, receives the remaining suffix and concatenates the exact prefix + suffix. Compressed interrupted transfers resume as an uncompressed byte-offset pull so resume state is independent of zlib stream history.
+
+On a local transport/configuration/data failure the client issues Cancel Transfer. A pending device Transfer Status request is answered before the failure is surfaced. Cancellation failure does not replace the originating transfer error.
+
+### P-0705 — FileAccess truncated-MD5 (`SUPPORTED`, S-0023; T-0070/T-0073)
+
+Feature Capabilities reports checksum method 1 as `TRUNCATED_MD5` and can report a maximum file size. Get Item Checksum request field 25 carries the item UUID. Response field 26 contains item UUID, result enum and checksum fixed64.
+
+For a clear file `F`:
+
+```text
+digest = MD5(F)
+checksum_bytes = digest[0:8]
+wire_uint64 = little_endian_uint64(checksum_bytes)
+```
+
+Result values are 0 unspecified, 1 success, 2 item missing, 3 size too large, 4 internal error, 5 device busy. The synchronizer requests the checksum only when the advertised method/size bound permits it and rejects a mismatch.
+
+### P-0706 — Fitness extraction persistence and integrity (`SUPPORTED`, S-0017/S-0024; T-0057/T-0073/T-0074)
+
+A fitness file is published only after:
+
+1. FileAccess/legacy transport completes;
+2. server truncated-MD5 matches when FileAccess advertises it;
+3. FIT signature/header/data length is valid;
+4. FIT header CRC is valid when present;
+5. File ID global message 0 resolves to an activity/health type;
+6. trailing full-file FIT CRC matches.
+
+`fitness-sync` writes mode-`0600` clear bytes to a `.part` file while FileAccess data arrives. The next run resumes from the saved byte length. A complete valid file is atomically renamed to `.fit` and reused on subsequent syncs. The output directory is mode `0700`.
+
+When FileAccess is not advertised, `fitness-sync` uses the legacy directory/5002/5004/5054 path and applies the same FIT validation before publishing the file.
+
+
+### Second-client implementation sequence
+
+A second implementation can reproduce the pairing-to-fitness workflow from this specification without decompiler output by composing the layers in this order:
+
+1. **Discover and connect (P-0001..P-0006/P-0213).** Scan BLE and select the watch. With no proprietary GFDI record, request the OS Bluetooth bond; with saved LTK/EDIV/RAND use the unbonded Garmin-auth reconnect route. Discover services, request MTU 515, and use a direct GFDI pair or the MultiLink service-1 fallback from P-0014. `--system-bond` and `--garmin-auth` force the two pairing routes for testing.
+2. **Create the byte stream (P-0100..P-0115).** Treat notification callbacks as arbitrary stream chunks, split at zero delimiters, COBS-decode, validate GFDI lengths/CRC, allocate 5-bit transaction IDs and correlate acknowledgements by transaction + original message type.
+3. **Complete startup handshake (P-0301..P-0304).** Answer device-information/configuration requests, retain peer configuration flags and set the protobuf payload limit from device information before using Smart protobuf.
+4. **Authenticate (P-0201..P-0213).** On a system-bonded route, complete startup without proprietary Garmin session keys. On an unbonded route, handle 5101 negotiation; with saved LTK/EDIV/RAND attempt 5102 reconnect, otherwise process 5103/5104/5105/5106/5107/5108/5109/5111 fresh auth. Persist only LTK/EDIV/RAND and install the secure wrapper only after the plaintext 5111 acknowledgement.
+5. **Enable semantic services.** Battery/time/status use P-0310/P-0320/P-0330. GNCS notifications use P-0500..P-0507 when host/peer capabilities enable them.
+6. **Probe FileAccess (P-0600..P-0604/P-0700).** If peer Configuration includes bit 90, use FileAccess/Sync2. If peer bit 95 is also present, send the Core feature-capabilities request and record optional FileAccess checksum/custom-flag metadata when returned. If peer bit 90 is absent, use the legacy path in P-0400..P-0411.
+7. **List fitness objects (P-0700).** Send Item List and follow `session_id` pages. Preserve the GDXML string-key table across pages. Select activity/health types such as `FIT_TYPE_4`, `FIT_TYPE_32`, `FIT_TYPE_49` and the other modeled health FIT types; item UUIDs are runtime identifiers, not constants.
+8. **Register MultiLink (P-0701).** Subscribe to a `281x` data characteristic, register service ID 4, then register one reliable FileAccess pipe service. Respect an alternate characteristic returned with status 3. Use the resulting reliable handle `0x80..0x87`.
+9. **Run MLR (P-0702/P-0703).** Encode/decode SN/RN headers, begin with a 32-packet window, advance cumulative ACKs, emit ACK on five packets or after 10 ms, update RTT/RTO, and on timeout halve the window and retransmit from the unacknowledged base.
+10. **Pull/resume the item (P-0704).** Send FileAccess Pull with `offset`, configure the pipe `00 | READ | transfer_handle:u64LE`, collect clear bytes in sequence, optionally inflate negotiated zlib data, and answer the device Transfer Status request. For interrupted transfer, persist clear bytes and issue the next Pull with offset equal to the prefix length.
+11. **Verify integrity (P-0705/P-0706).** When advertised, query truncated-MD5 and compare it over the complete clear file. Validate FIT signature, header CRC, File ID and trailing FIT file CRC before publishing the file.
+12. **Persist/reuse.** Store pairing material in an OS-appropriate credential store. Store partial fitness bytes durably with private permissions, atomically publish complete `.fit` files, and skip a completed file after revalidating its FIT container.
+
+The repository command implementing this sequence is `garmin-proto fitness-sync <address> --output <dir>`.
 
 ---
 
@@ -900,7 +1032,7 @@ Current names recovered from the app's own message-name mapping:
 | 5110 | Passkey Redisplay | 5111 | Secure Session |
 | 5112 | Out-of-Band Passkey Data |  |  |
 
-Unlisted IDs seen elsewhere must not be assumed unrelated; the static census is the working classification set, not proof that a particular watch emits every family.
+`src/garmin_proto_lab/messages.py` assigns every recovered ID an explicit disposition: implemented by the pairing/notification/status/fitness stack, outside the direct-fitness workflow, or `static_no_callsite`. The only named authentication ID with no sender/receiver call site in this build is 5110 Passkey Redisplay (S-0022). `tests/test_messages.py` enforces full census coverage (T-0076). A target-watch capture can add newly observed IDs to this census, but no recovered ID is left unclassified.
 
 ---
 
@@ -973,7 +1105,7 @@ Current local tests are offline/static-proof tests and are not substitutes for t
 | T-0043 | `tests/test_handshake.py` host 5024 + 5050 handshake | P-0302/P-0303 |
 | T-0044 | queued-download bitset roundtrip | P-0304 |
 | T-0045 | `tests/test_sync.py` sync option/category bitsets | P-0330/P-0331 |
-| T-0046 | File Ready fixed grammar/unknown-byte preservation | P-0332 |
+| T-0046 | File Ready fixed grammar/reserved-byte preservation | P-0332 |
 | T-0047 | ordinary file receiver duplicate/offset/CRC tests | P-0402 |
 | T-0048 | compressed receiver zlib/counter/CRC/failure tests | P-0405 |
 | T-0049 | supported-file-type/directory parsing tests | P-0406/P-0407 |
@@ -992,8 +1124,19 @@ Current local tests are offline/static-proof tests and are not substitutes for t
 | T-0064/T-0065 | `tests/test_file_access_proto.py` / `tests/test_file_access_client.py` FileAccess list/pull/status control | P-0700 |
 | T-0066 | `tests/test_multilink.py` / `tests/test_multilink_client.py` MultiLink command/registration vectors | P-0701 |
 | T-0067 | `tests/test_mlr.py` native-vector reliable header/fragmentation/ACK state | P-0702 |
-| T-0068 | offline FileAccess + MultiLink/MLR download, zlib and cancel/recovery simulation | P-0703 |
+| T-0068 | offline FileAccess + MultiLink/MLR download, zlib and cancel/recovery simulation | P-0704 |
+| T-0070 | complete FileAccess service-schema/checksum vectors | P-0700/P-0705 |
+| T-0071 | native MLR vectors, window growth, RTT/RTO and deferred ACK timing | P-0702/P-0703 |
+| T-0072 | MLR timeout backoff, retransmission and out-of-order suppression | P-0703 |
+| T-0073 | large >64-packet FileAccess transfer, resume, zlib and checksum integrity | P-0704..P-0706 |
+| T-0074 | fresh-bond/persisted-reconnect policy plus persistent fitness-file synchronization | P-0213/P-0706 |
+
+| T-0080 | `tests/test_fit.py` standard monitoring/HRV/stress/SpO2/sleep/respiration/body-battery projection | P-0412 |
+
+| T-0081 | `tests/test_client_protobuf.py` peer bit-90 FileAccess gate vs optional bit-95 capabilities | P-0602/P-0700 |
+
+| T-0082 | `tests/test_fit.py` Session/Lap/Activity aggregate semantics and sport/sub-sport mapping | P-0412 |
 
 ## Current blockers
 
-There is intentionally no claim that pairing, reconnect, notification delivery or activity transfer works with a real watch yet. Offline reconstruction now reaches both the legacy file path and an experimental next-generation FileAccess/MultiLink/MLR read path. The remaining decisive gate is hardware: verify fresh pairing/reconnect, actual MultiLink registration/client-ID acceptance, MLR timing/recovery, and representative activity/monitoring/sleep downloads on the target watch.
+Static reconstruction and offline implementation cover pairing, reconnect, legacy file transfer and FileAccess/MultiLink/MLR fitness extraction. Hardware acceptance is still pending because no target watch is attached: the remaining gate is fresh pairing/reconnect, live MultiLink registration, MLR timing/recovery, and representative activity/monitoring/sleep downloads on the designated watch.

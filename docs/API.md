@@ -1,29 +1,26 @@
 # Semantic API
 
-The public API intentionally hides raw GFDI frames from an accessibility-facing application. Protocol wire details live in `spec/PROTOCOL.md`.
+The public API keeps BLE, GFDI framing, authentication, file transport and fitness-file handling as separate layers. Wire layouts live in `spec/PROTOCOL.md`.
 
 ## Construction
 
-Compose the layers in this order:
-
 ```python
 backend = BleakBackend()
-transport = BleTransport(backend)
+requires_bond = requires_system_bond(pairing_store, device_address)
+transport = BleTransport(backend, require_bond=requires_bond)
 link = GfdiMessageLink(transport)
 auth = AuthProtocolEngine(link, device_address, pairing_store)
 client = GarminClient(
     link,
     HostIdentity(1, "Independent Garmin Client", "Independent", "Python client"),
-    frozenset({6, 71}),
+    frozenset({71, 90}),
     auth=auth,
 )
 ```
 
-`FilePairingStore` persists only the pairing material needed for reconnect. Device identifiers are hashed in the store and the file is created mode `0600`.
+Set `BleTransport(..., require_bond=True)` only when an OS-level Bluetooth bond is explicitly required. `FilePairingStore` persists LTK/EDIV/RAND for GFDI reconnect; device identifiers are hashed and the store is mode `0600`.
 
-## Main operations
-
-`GarminClient` exposes the v1 semantic operations:
+## GarminClient
 
 | Operation | Method |
 |---|---|
@@ -35,57 +32,88 @@ client = GarminClient(
 | time synchronization | `sync_time()` |
 | notification source | `send_notification_source(source)` |
 | notification data/attributes | `send_notification_data(payload)` |
-| file directory | `list_files()` / `list_activity_health_files()` |
-| file read | `read_file(index)` |
-| activity/health read + FIT cross-check | `download_activity_health(remote)` |
-| archive downloaded file | `archive_file(index)` |
+| legacy file directory | `list_files()` / `list_activity_health_files()` |
+| legacy file read | `read_file(index)` |
+| validated legacy fitness read | `download_activity_health(remote)` |
+| archive legacy file | `archive_file(index)` |
 
-The client never requires application code to manually construct COBS, CRC, authentication, or file-transfer frames.
+`client.events` is an `asyncio.Queue[SemanticEvent]`. Events expose parsed semantic state rather than raw packet hex.
 
-## Events
+## Pairing and reconnect
 
-`client.events` is an `asyncio.Queue[SemanticEvent]`. Each event has a stable `kind`, parsed `value`, source `message_type`, and `accessible_text()` summary. Current kinds cover authentication, device identity, legacy configuration, protobuf feature capabilities, connection-ready, battery, time, sync/file announcements, directory/file completion, notification subscription/control point, unknown messages, and protocol problems.
+`AuthProtocolEngine` implements messages 5101–5112. Visible pairing obtains the decimal watch passkey through `passkey_provider(mode, timeout_seconds)`. Just-works uses the zero 16-byte passkey. OOB pairing accepts a 16-byte passkey. Persistent reconnect sends stored EDIV/RAND, derives a fresh session key, verifies it, then installs the secure wrapper after the plaintext 5111 acknowledgement is written.
 
-UI code should speak/render semantic state, not packet hex. Unknown values are preserved and surfaced rather than silently guessed.
+Garmin Connect has two authentication routes. Its fresh pairing strategy requests the Android/BlueZ system bond. Once the remote is bonded, `DefaultAuthDelegate.isGarminAuthAllowed()` disables proprietary Garmin auth and the GFDI stack uses its stub auth handler, so no LTK/EDIV/RAND record is expected from that route. On Linux `BleakBackend` registers a temporary BlueZ `KeyboardDisplay` Agent1 during bonding.
 
-## Pairing
+The unbonded route runs Garmin messages 5101–5111 and stores LTK/EDIV/RAND for 5102 reconnect; a saved Garmin-auth record therefore skips a new system bond request. The CLI follows this split automatically. `--system-bond` forces the bonded route and `--garmin-auth` forces the unbonded Garmin-auth route for controlled testing.
 
-Visible pairing uses a `passkey_provider(mode, timeout_seconds)` callback. The callback returns the decimal passkey shown by the watch. OOB pairing accepts an explicit 16-byte passkey. `AuthProtocolEngine.cancel_pairing()` is the application-level user-cancel path. A successful session installs secure packet wrapping only after the plaintext 5111 acknowledgement is sent.
+## Feature capabilities
 
-## Capability gating
+Legacy Configuration 5050 controls optional managers. Relevant recovered flags are:
 
-Do not assume optional watch features. The client first consumes legacy Configuration 5050. Smart/Core feature capabilities are queried only when peer flag 95 is present; GNCS requires host flag 6. Time uses the 5052 request path when peer flag 71 is present, otherwise the legacy 5026 settings path is used.
+- 6: GNCS notification provider
+- 71: current-time request path
+- 90: next-generation FileAccess manager
+- 95: Smart/Core feature-capability exchange
 
+Peer bit 90 is the runtime FileAccess/Sync2 selector. Peer bit 95 only enables the optional Core FeatureCapabilities exchange. When 95 is present, `refresh_feature_capabilities()` exchanges Core field 8/9 and stores optional FileAccess checksum/custom-flag metadata when advertised; FileAccess remains usable from bit 90 even when that extension is absent.
 
-## Experimental next-generation FileAccess
+## FileAccess and MultiLink
 
-For watches that advertise legacy flag 90, `FileAccessControlClient` implements protobuf item listing/pull/status handling. `MultiLinkClient` implements the recovered MultiLink registration channel and `FileAccessMlrDownloader` joins it to the clean-room MLR data path. The current downloader deliberately requests **uncompressed** reads and uses conservative immediate cumulative ACKs.
+`FileAccessControlClient` implements the recovered FileAccess schema: item-list pagination, pull/push negotiation, transfer status, priority updates, item deletion, flag modification, cancellation, item/resource notifications, software-update part-number requests and truncated-MD5 queries.
 
 ```python
 control = client.file_access_control
 ml = MultiLinkClient(
     backend,
     transport.services,
-    connection_id=my_stable_nonzero_app_id,
+    connection_id=0x01,  # Garmin Connect client_uuid / MultiLink client identity
     max_write_length=transport.write_payload_size,
 )
 await ml.initialize()
-listing = await control.list_items()
-download = await FileAccessMlrDownloader(control, ml).download(listing.items[0])
+listing = await control.list_items(requested_modified_time=True)
+downloader = FileAccessMlrDownloader(control, ml)
+download = await downloader.download(listing.items[0], verify_checksum=True)
 ```
 
-`connection_id` is the independent application's stable MultiLink identity. The CLI default is project-defined wire text `GPLAB001`; it is not a Garmin identifier. Pulls default to uncompressed data, with optional standard-zlib decompression when requested. Local transfer failure sends best-effort FileAccess Cancel Transfer before cleanup. This path is offline-tested but remains experimental until a target watch validates service registration, reliable timing and recovery.
+`FileAccessMlrDownloader` uses the recovered MLR sender/receiver state: a 64-value sequence space, 32-packet initial window, cumulative ACKs, five-packet immediate ACK threshold, 10 ms deferred ACK, RTT-derived RTO, timeout backoff and retransmission. Pulls support byte-offset resume, optional zlib compression, Transfer Status completion and FileAccess cancellation on failure.
 
-## Hardware workflow
+`GetItemChecksum` uses the first eight MD5 digest bytes interpreted little-endian as protobuf fixed64. The downloader can compare that value after a complete pull.
 
-The reference CLI exercises the same API:
+## Persistent fitness synchronization
+
+`NextGenFitnessSync` turns FileAccess into a local fitness archive:
+
+```python
+sync = NextGenFitnessSync(
+    control,
+    downloader,
+    "~/Garmin-FIT",
+    capabilities=client.file_access_capabilities,
+)
+results = await sync.sync()
+```
+
+It filters recovered fitness data types (`FIT_TYPE_4`, `FIT_TYPE_32`, `FIT_TYPE_49` and the other modeled health FIT types), writes mode-`0600` `.part` files as bytes arrive, resumes from the saved prefix, performs server truncated-MD5 verification when advertised, validates the FIT File ID and full-file CRC, then atomically publishes the `.fit` file. Completed valid files are not downloaded again.
+
+## CLI
 
 ```bash
 uv run garmin-proto scan --seconds 8
 uv run garmin-proto services <address>
 uv run garmin-proto probe <address>
+uv run garmin-proto reset-pairing <address>
 uv run garmin-proto pair <address>
+uv run garmin-proto fitness-sync <address> --output ~/Garmin-FIT --fit-json
 uv run garmin-proto workflow <address> --download-first-activity
 ```
 
-Raw addresses are redacted by default in discovery output. Pairing secrets and session keys are not printed. `workflow` is an integration probe, not evidence of completion until the designated watch/firmware passes the matrix in `GOAL.md`.
+`fitness-sync` selects FileAccess when the watch advertises it and otherwise uses the legacy GFDI directory/download path. `--fit-json` writes mode-`0600` JSON sidecars containing the decoded generic FIT records plus decoded standard activity samples. Add `--legacy` to force the legacy path, `--compression` to request compressed transfer, or `--system-bond` to force a new OS Bluetooth bond on a saved GFDI pairing record. Pairing secrets and session keys are not printed.
+
+## GFDI physical route selection
+
+`BleTransport` first uses a discovered dedicated GFDI characteristic pair. If none exists and the Garmin MultiLink service is present, it registers logical MultiLink service ID 1 and carries the identical GFDI COBS byte stream over that handle. Reliable service handles use the MLR ARQ engine; non-reliable handles use one-byte MultiLink framing. Higher layers do not need separate code paths.
+
+## FIT fitness data
+
+`parse_fit_records(data)` returns every FIT data record with numeric global-message and field identifiers preserved. `extract_activity_samples(data)` projects standard global-message-20 Record fields into `ActivitySample` values with UTC timestamp, latitude/longitude, altitude, heart rate, cadence, distance, speed, power, and temperature. `extract_activity_summaries(data)` projects Session/Lap/Activity aggregates (timer, distance, calories, speed, heart rate, cadence, power, ascent/descent, training effect, sport/sub-sport). `extract_wellness_samples(data)` projects the standard weight/body-composition, blood-pressure, monitoring, HRV, resting-HR, stress, SpO2, sleep-level, respiration-rate, and Body Battery messages using FIT Profile 21.214 field scales and enums. The FIT header and full-file CRC are validated before records are exposed, and the generic numeric/raw representation remains available beside semantic fields.

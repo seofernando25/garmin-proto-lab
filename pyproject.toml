@@ -14,7 +14,7 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-hardware = ["bleak>=0.22,<3"]
+hardware = ["bleak>=0.22,<3", "dbus-fast>=2.20; sys_platform == 'linux'"]
 
 [project.scripts]
 garmin-proto = "garmin_proto_lab.cli:main"

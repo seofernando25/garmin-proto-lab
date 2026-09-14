@@ -10,10 +10,11 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Awaitable, Callable, Protocol, Sequence
+from typing import Any, Awaitable, Callable, Protocol, Sequence
 from uuid import UUID
 
 from .ble_stream import split_att_writes
+from .multilink import DEFAULT_INDEPENDENT_CLIENT_ID, MULTILINK_SERVICE_UUID
 from .uuids import (
     CONNECT_MOBILE_READ,
     CONNECT_MOBILE_SERVICE,
@@ -146,15 +147,20 @@ def select_gfdi_link(services: Sequence[GattService]) -> GfdiLink:
 @dataclass(slots=True)
 class BleTransport:
     backend: BleBackend
-    require_bond: bool = True
+    require_bond: bool = False
     requested_mtu: int = 515
     connect_timeout: float = 20.0
+    bond_timeout: float = 45.0
+    bond_attempts: int = 2
     operation_timeout: float = 15.0
     state: TransportState = TransportState.NOT_STARTED
     device: DiscoveredDevice | None = None
     link: GfdiLink | None = None
     services: tuple[GattService, ...] = ()
     negotiated_mtu: int = 23
+    multilink_connection_id: int = DEFAULT_INDEPENDENT_CLIENT_ID
+    multilink_client: Any | None = None
+    _multilink_gfdi: Any | None = None
     _notification_callback: NotificationCallback | None = None
     events: list[TransportEvent] = field(default_factory=list)
 
@@ -191,29 +197,105 @@ class BleTransport:
                 result = setter(self._backend_disconnected)
                 if result is not None and hasattr(result, "__await__"):
                     await result
-            await asyncio.wait_for(self.backend.connect(device), self.connect_timeout)
-            if self.require_bond and not await asyncio.wait_for(self.backend.is_bonded(), self.operation_timeout):
+            paired_connector = getattr(self.backend, "connect_with_pairing", None)
+            if self.require_bond and paired_connector is not None:
+                if self.bond_attempts < 1:
+                    raise TransportError("bond_attempts must be at least one")
                 self._set_state(TransportState.WAITING_FOR_BOND)
-                await asyncio.wait_for(self.backend.create_bond(), self.operation_timeout)
-                if not await asyncio.wait_for(self.backend.is_bonded(), self.operation_timeout):
-                    raise TransportError("bonding did not complete")
+                last_bond_error: BaseException | None = None
+                for attempt in range(1, self.bond_attempts + 1):
+                    try:
+                        await asyncio.wait_for(
+                            paired_connector(device),
+                            self.connect_timeout + self.bond_timeout,
+                        )
+                        if await asyncio.wait_for(self.backend.is_bonded(), self.operation_timeout):
+                            last_bond_error = None
+                            break
+                        last_bond_error = TransportError("bonding did not complete")
+                    except BaseException as exc:
+                        last_bond_error = exc
+                    if attempt == self.bond_attempts:
+                        assert last_bond_error is not None
+                        raise TransportError(
+                            f"bonding failed after {self.bond_attempts} attempt(s)"
+                        ) from last_bond_error
+            else:
+                await asyncio.wait_for(self.backend.connect(device), self.connect_timeout)
+                if self.require_bond and not await asyncio.wait_for(self.backend.is_bonded(), self.operation_timeout):
+                    if self.bond_attempts < 1:
+                        raise TransportError("bond_attempts must be at least one")
+                    self._set_state(TransportState.WAITING_FOR_BOND)
+                    last_bond_error = None
+                    for attempt in range(1, self.bond_attempts + 1):
+                        try:
+                            await asyncio.wait_for(self.backend.create_bond(), self.bond_timeout)
+                            if await asyncio.wait_for(self.backend.is_bonded(), self.operation_timeout):
+                                last_bond_error = None
+                                break
+                            last_bond_error = TransportError("bonding did not complete")
+                        except BaseException as exc:
+                            last_bond_error = exc
+                        if attempt == self.bond_attempts:
+                            assert last_bond_error is not None
+                            raise TransportError(
+                                f"bonding failed after {self.bond_attempts} attempt(s)"
+                            ) from last_bond_error
 
             self._set_state(TransportState.DISCOVERING_SERVICES)
             services = tuple(await asyncio.wait_for(self.backend.discover_services(), self.operation_timeout))
             self.services = services
-            self.link = select_gfdi_link(services)
             mtu = await asyncio.wait_for(self.backend.request_mtu(self.requested_mtu), self.operation_timeout)
             if mtu < 23:
                 raise TransportError(f"invalid negotiated MTU {mtu}")
             self.negotiated_mtu = mtu
-            await asyncio.wait_for(
-                self.backend.subscribe(self.link.notify_uuid, self._deliver_notification),
-                self.operation_timeout,
-            )
+
+            try:
+                self.link = select_gfdi_link(services)
+            except TransportError as direct_error:
+                if not any(service.uuid == MULTILINK_SERVICE_UUID for service in services):
+                    raise direct_error
+                from .multilink_client import MultiLinkClient
+                from .multilink_gfdi import MultiLinkGfdiChannel
+
+                multilink = MultiLinkClient(
+                    self.backend,
+                    services,
+                    self.multilink_connection_id,
+                    self.write_payload_size,
+                    timeout=self.operation_timeout,
+                )
+                await asyncio.wait_for(multilink.initialize(), self.operation_timeout)
+                logical = await asyncio.wait_for(multilink.open_gfdi_service(), self.operation_timeout)
+                if multilink.write_uuid is None or multilink.notify_uuid is None:
+                    raise TransportError("MultiLink GFDI characteristic pair was not selected")
+                channel = MultiLinkGfdiChannel(multilink, logical, self._deliver_notification)
+                await channel.start()
+                self.multilink_client = multilink
+                self._multilink_gfdi = channel
+                self.link = GfdiLink(
+                    MULTILINK_SERVICE_UUID,
+                    multilink.write_uuid,
+                    multilink.notify_uuid,
+                    "multilink_gfdi_reliable" if logical.reliable else "multilink_gfdi",
+                )
+            else:
+                await asyncio.wait_for(
+                    self.backend.subscribe(self.link.notify_uuid, self._deliver_notification),
+                    self.operation_timeout,
+                )
+
             self._set_state(TransportState.AVAILABLE, self.link.family)
             return self.link
         except Exception as exc:
             self._set_state(TransportState.FAILED, str(exc))
+            channel, self._multilink_gfdi = self._multilink_gfdi, None
+            if channel is not None:
+                try:
+                    await channel.close(close_service=False)
+                except Exception:
+                    pass
+            self.multilink_client = None
             try:
                 await self.backend.disconnect()
             except Exception:
@@ -231,8 +313,18 @@ class BleTransport:
             await result
 
     async def _backend_disconnected(self) -> None:
-        if self.state in (TransportState.DISCONNECTING, TransportState.FINISHED, TransportState.NOT_STARTED):
+        if self.state in (
+            TransportState.CONNECTING_GATT,
+            TransportState.WAITING_FOR_BOND,
+            TransportState.DISCONNECTING,
+            TransportState.FINISHED,
+            TransportState.NOT_STARTED,
+        ):
             return
+        channel, self._multilink_gfdi = self._multilink_gfdi, None
+        if channel is not None:
+            await channel.close(close_service=False)
+        self.multilink_client = None
         self.link = None
         self.services = ()
         self.negotiated_mtu = 23
@@ -271,6 +363,9 @@ class BleTransport:
     async def send(self, data: bytes) -> None:
         if self.state != TransportState.AVAILABLE or self.link is None:
             raise TransportError("transport is not available")
+        if self._multilink_gfdi is not None:
+            await asyncio.wait_for(self._multilink_gfdi.send(data), self.operation_timeout)
+            return
         for chunk in split_att_writes(data, self.write_payload_size):
             await asyncio.wait_for(self.backend.write(self.link.write_uuid, chunk), self.operation_timeout)
 
@@ -279,9 +374,13 @@ class BleTransport:
             self._set_state(TransportState.FINISHED)
             return
         self._set_state(TransportState.DISCONNECTING)
+        channel, self._multilink_gfdi = self._multilink_gfdi, None
         try:
+            if channel is not None:
+                await channel.close()
             await asyncio.wait_for(self.backend.disconnect(), self.operation_timeout)
         finally:
+            self.multilink_client = None
             self.link = None
             self.services = ()
             self.device = None

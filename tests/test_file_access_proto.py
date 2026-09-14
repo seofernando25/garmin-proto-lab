@@ -4,6 +4,8 @@ from uuid import UUID
 
 import pytest
 
+import garmin_proto_lab.file_access_proto as fa
+
 from garmin_proto_lab.file_access_proto import (
     CancelTransferRequest,
     CancelTransferStatus,
@@ -12,11 +14,16 @@ from garmin_proto_lab.file_access_proto import (
     FileAccessCapabilities,
     FileDataType,
     FileItemReference,
+    GetItemChecksumRequest,
+    GetItemChecksumResponse,
+    GetItemChecksumResult,
     ItemAccessResult,
     ItemListRequest,
     ItemListStatus,
     MlrPipeConfigure,
     MlrPipeConfigureResponse,
+    MlrPipeConfigureStatus,
+    MlrPipeGeneralStatus,
     PullItemRequest,
     TransferFailureReason,
     TransferStatusRequest,
@@ -26,16 +33,19 @@ from garmin_proto_lab.file_access_proto import (
     TransportProtocol,
     build_cancel_transfer_smart,
     build_file_access_smart,
+    build_get_item_checksum_smart,
     build_item_list_smart,
     build_pull_item_smart,
     build_service_message,
     build_transfer_status_smart_response,
     encode_uuid,
     parse_cancel_transfer_smart_response,
+    parse_get_item_checksum_smart_response,
     parse_item_list_smart_response,
     parse_pull_item_smart_response,
     parse_transfer_status_smart_request,
     parse_uuid,
+    truncated_md5,
 )
 from garmin_proto_lab.protobuf_wire import (
     decode_sint32,
@@ -172,8 +182,15 @@ def test_pull_request_and_mlr_configure_exact_vector() -> None:
 
     configure = MlrPipeConfigure(0x0102030405060708, MlrPipeDirection.READ)
     assert configure.encode() == bytes.fromhex("00000807060504030201")
-    assert MlrPipeConfigureResponse.parse(b"\x00\x00\x00").successful
-    assert not MlrPipeConfigureResponse.parse(b"\x00\x01").successful
+    ok = MlrPipeConfigureResponse.parse(b"\x00\x00\x00")
+    assert ok.successful
+    assert ok.general_status is MlrPipeGeneralStatus.SUCCESS
+    assert ok.configure_status is MlrPipeConfigureStatus.SUCCESS
+    assert MlrPipeConfigureResponse.parse(b"\x00\x01").general_status is MlrPipeGeneralStatus.UNKNOWN_COMMAND
+    assert MlrPipeConfigureResponse.parse(b"\x00\x02").general_status is MlrPipeGeneralStatus.INVALID_COMMAND_DATA
+    assert MlrPipeConfigureResponse.parse(b"\x00\x00\x01").configure_status is MlrPipeConfigureStatus.UNKNOWN_TRANSFER_HANDLE
+    assert MlrPipeConfigureResponse.parse(b"\x00\x00\x02").configure_status is MlrPipeConfigureStatus.UNEXPECTED_TRANSFER_DIRECTION
+    assert MlrPipeConfigureResponse.parse(b"\x00\x00\x03").configure_status is MlrPipeConfigureStatus.UNEXPECTED_TRANSFER_SIZE
     with pytest.raises(ValueError, match="missing configure status"):
         MlrPipeConfigureResponse.parse(b"\x00\x00")
 
@@ -223,3 +240,140 @@ def test_cancel_transfer_request_response_wire() -> None:
     assert parse_cancel_transfer_smart_response(unknown).status is CancelTransferStatus.UNKNOWN_TRANSFER
     with pytest.raises(ValueError, match="uint32"):
         CancelTransferRequest(1 << 32).encode()
+
+
+def test_get_item_checksum_wire_and_truncation_algorithm() -> None:
+    uid = UUID("00112233-4455-6677-8899-aabbccddeeff")
+    request = build_get_item_checksum_smart(GetItemChecksumRequest(uid))
+    service = last_bytes(parse_fields(request), 43)
+    body = last_bytes(parse_fields(service or b""), 25)
+    assert body is not None
+    assert parse_uuid(last_bytes(parse_fields(body), 1) or b"") == uid
+
+    data = b"garmin-file-access-checksum-vector"
+    expected = int.from_bytes(__import__("hashlib").md5(data).digest()[:8], "little")
+    assert truncated_md5(data) == expected
+    response_body = (
+        encode_message(1, encode_uuid(uid))
+        + encode_uint(2, GetItemChecksumResult.SUCCESS)
+        + encode_fixed64(3, expected)
+    )
+    response = parse_get_item_checksum_smart_response(
+        build_file_access_smart(build_service_message(26, response_body))
+    )
+    assert response.uid == uid
+    assert response.result is GetItemChecksumResult.SUCCESS
+    assert response.checksum_truncated_md5 == expected
+
+
+def test_remaining_file_access_service_schema_vectors() -> None:
+    uid = UUID("12345678-1234-5678-9abc-def012345678")
+    flag1 = UUID(int=1)
+    flag2 = UUID(int=2)
+    item = fa.FileItemReference(uid, fa.FileDataType(fa.DataTypeFormat.GDXML_DATA_TYPE, "FIT_TYPE_4"), 99)
+
+    push = fa.build_push_item_smart(fa.PushItemRequest(item, 30, requested_compression_window=15))
+    service = last_bytes(parse_fields(push), 43)
+    body = last_bytes(parse_fields(service or b""), 3)
+    fields = parse_fields(body or b"")
+    assert last_varint(fields, 2) == 30
+    assert last_varint(fields, 3) == 0
+    assert last_varint(fields, 4) == 15
+    push_response = (
+        encode_uint(1, fa.ItemAccessResult.SUCCESS)
+        + encode_uint(2, 12)
+        + encode_uint(3, fa.TransportProtocol.MULTILINK_TRANSPORT_PIPE)
+        + encode_uint(4, 44)
+        + encode_string(5, "/GARMIN/NEW.FIT")
+        + encode_uint(8, 15)
+    )
+    parsed_push = fa.parse_push_item_smart_response(
+        fa.build_file_access_smart(fa.build_service_message(4, push_response))
+    )
+    assert parsed_push.offset == 12
+    assert parsed_push.transfer_handle == 44
+
+    delete = fa.build_delete_item_smart(fa.DeleteItemRequest(uid, fa.TransferDirection.PULL))
+    service = last_bytes(parse_fields(delete), 43)
+    body = last_bytes(parse_fields(service or b""), 13)
+    fields = parse_fields(body or b"")
+    assert fa.parse_uuid(last_bytes(fields, 1) or b"") == uid
+    assert last_varint(fields, 2) == fa.TransferDirection.PULL
+    delete_response = fa.parse_delete_item_smart_response(
+        fa.build_file_access_smart(fa.build_service_message(14, encode_uint(1, fa.DeleteItemResult.ITEM_DOES_NOT_EXIST)))
+    )
+    assert delete_response.result is fa.DeleteItemResult.ITEM_DOES_NOT_EXIST
+
+    priority = fa.build_priority_update_smart(fa.PriorityUpdateRequest(44, 40))
+    service = last_bytes(parse_fields(priority), 43)
+    body = last_bytes(parse_fields(service or b""), 6)
+    assert [(f.number, f.value) for f in parse_fields(body or b"")] == [(1, 44), (2, 40)]
+    priority_response = fa.parse_priority_update_smart_response(
+        fa.build_file_access_smart(fa.build_service_message(7, encode_uint(1, fa.PriorityUpdateStatus.SUCCESS)))
+    )
+    assert priority_response.status is fa.PriorityUpdateStatus.SUCCESS
+
+    cancel_note = fa.parse_item_list_cancel_smart_notification(
+        fa.build_file_access_smart(fa.build_service_message(11, encode_uint(1, 55)))
+    )
+    assert cancel_note is not None and cancel_note.session_id == 55
+
+    added = fa.parse_item_added_smart_notification(
+        fa.build_file_access_smart(fa.build_service_message(12, encode_message(1, item.encode())))
+    )
+    assert added is not None and added.items[0].uid == uid
+
+    modify = fa.build_modify_flags_smart(fa.ModifyFlagsRequest(uid, (flag1,), (flag2,)))
+    service = last_bytes(parse_fields(modify), 43)
+    body = last_bytes(parse_fields(service or b""), 15)
+    fields = parse_fields(body or b"")
+    assert fa.parse_uuid(last_bytes(fields, 1) or b"") == uid
+    assert len([f for f in fields if f.number == 2]) == 1
+    assert len([f for f in fields if f.number == 3]) == 1
+    modify_response = fa.parse_modify_flags_smart_response(
+        fa.build_file_access_smart(fa.build_service_message(16, encode_uint(1, fa.ModifyFlagsStatus.SUCCESS)))
+    )
+    assert modify_response.status is fa.ModifyFlagsStatus.SUCCESS
+
+    updated_payload = (
+        encode_message(1, fa.encode_uuid(uid))
+        + encode_message(2, fa.encode_uuid(flag1))
+        + encode_message(3, fa.encode_uuid(flag2))
+    )
+    updated = fa.parse_item_updated_smart_notification(
+        fa.build_file_access_smart(fa.build_service_message(17, updated_payload))
+    )
+    assert updated is not None
+    assert updated.uid == uid
+    assert updated.changed_flags_set == (flag1,)
+    assert updated.changed_flags_clear == (flag2,)
+
+    resource = fa.parse_resource_update_smart_notification(
+        fa.build_file_access_smart(
+            fa.build_service_message(
+                20,
+                encode_uint(1, fa.ResourceUpdateStatus.CURRENT_PRIORITY_LOWERED) + encode_uint(2, 19),
+            )
+        )
+    )
+    assert resource is not None
+    assert resource.status is fa.ResourceUpdateStatus.CURRENT_PRIORITY_LOWERED
+    assert resource.current_priority == 19
+
+    sync_button = fa.parse_sync_button_smart_notification(
+        fa.build_file_access_smart(fa.build_service_message(22, b""))
+    )
+    assert sync_button is not None and sync_button.raw_fields == ()
+
+    part_request = fa.build_software_update_part_number_smart(
+        fa.SoftwareUpdatePartNumberRequest(fa.SoftwareUpdateRequestor.APP)
+    )
+    service = last_bytes(parse_fields(part_request), 43)
+    body = last_bytes(parse_fields(service or b""), 23)
+    assert last_varint(parse_fields(body or b""), 1) == fa.SoftwareUpdateRequestor.APP
+    parts = fa.parse_software_update_part_number_smart_response(
+        fa.build_file_access_smart(
+            fa.build_service_message(24, encode_string(1, "006-B1234-00") + encode_string(1, "006-B5678-00"))
+        )
+    )
+    assert parts.part_numbers == ("006-B1234-00", "006-B5678-00")

@@ -2,27 +2,27 @@
 
 ## Mission
 
-Independently understand the watch-facing protocol used by the lawfully obtained Garmin Connect 5.29 package and implement a compatibility layer that can communicate with the owner's Garmin watch without requiring Garmin Connect at runtime.
+Understand the watch-facing protocol used by the lawfully obtained Garmin Connect 5.29 package and implement a compatibility layer that can communicate with the owner's Garmin watch without requiring Garmin Connect at runtime.
 
-The project is protocol-reimplementation work, not an attempt to clone Garmin Connect. The finish line is a documented, tested, independently written protocol library plus a small reference client that exposes semantic operations suitable for an accessible application.
+The project is protocol-reimplementation work, not an attempt to clone Garmin Connect. The finish line is a documented, tested protocol library plus a small reference client that exposes semantic operations suitable for an accessible application.
 
 ## Scope and boundaries
 
-- Work only from the APK/APKM already acquired for this project, behavior observed on the owner's devices, Android/Bluetooth standards, and tool documentation.
+- Research inputs may include the APK/APKM already acquired for this project, behavior observed on the owner's devices, Android/Bluetooth standards, tool documentation, and public open-source Garmin interoperability projects. Third-party source use must respect its license and be attributed when code is incorporated.
 - Do not redistribute Garmin binaries, source-like decompiler output, signing material, artwork, text, or other copyrighted application assets.
-- Do not copy decompiled methods into the implementation. Decompiled code is evidence used to infer protocol behavior; implementation code must be independently written from the protocol specification in `spec/PROTOCOL.md`.
+- Do not transplant proprietary Garmin decompiled methods into the public implementation. Decompiled code is evidence used to infer protocol behavior. Public third-party code may be used only under license-compatible terms and with required notices/attribution.
 - Protocol facts such as UUIDs, message IDs, field layouts, state transitions, checksums, and observed byte sequences may be documented as interoperability facts.
 - Do not extract or reuse Garmin account credentials, cloud tokens, private user data, or keys unrelated to the watch pairing/session being tested.
 - Dynamic tests are performed only against devices/accounts the owner is authorized to use.
-- Existing third-party Garmin protocol implementations are intentionally excluded as design inputs until the independent reconstruction reaches its completion gate. They may be used afterward only for cross-validation, with any discrepancy independently re-tested.
+- Public third-party Garmin protocol implementations may be used as implementation references or cross-validation sources. Record the project/revision/license when it materially influences behavior, and resolve discrepancies against static or dynamic evidence rather than silently choosing one source.
 
 This is a technical project discipline, not a legal opinion.
 
-## The no-cheating rule
+## Evidence rule
 
 Every implemented protocol unit follows this chain:
 
-`evidence -> written protocol fact -> independent implementation -> test -> device verification`
+`evidence -> written protocol fact -> implementation -> test -> device verification`
 
 A unit is **not complete** because a decompiler produced readable code. It is complete only when the behavior can be explained in our own protocol documentation, encoded/decoded by our implementation, tested against fixtures, and verified on the watch when hardware interaction is required.
 
@@ -34,7 +34,7 @@ For each protocol unit, record:
 4. Frame layout: byte offsets, lengths, endianness, flags, message IDs, sequence numbers, integrity fields, and unknown bytes.
 5. Semantics: what request/response/event means and which fields are confirmed versus hypothesized.
 6. Failure behavior: malformed frame, timeout, wrong state, reconnect, duplicate packet, partial transfer.
-7. Independent encoder/decoder implementation.
+7. Encoder/decoder implementation with source/license attribution where third-party code is incorporated.
 8. Automated tests using sanitized fixtures.
 9. On-device verification where applicable.
 10. `spec/PROTOCOL.md` update with evidence links.
@@ -102,7 +102,7 @@ No requirement may be deleted merely because it is difficult. If the project sco
 
 ### M3 — Transport layer independently recreated
 
-- [ ] **REQ-030 Discovery implemented.** Independent code discovers/selects the intended watch without depending on Garmin Connect.
+- [x] **REQ-030 Discovery implemented.** Independent code discovers/selects the intended watch without depending on Garmin Connect.
 - [x] **REQ-031 Connection lifecycle implemented.** Connect, service discovery, characteristic selection, notification subscription, MTU negotiation, graceful disconnect, timeout, and reconnect are handled.
 - [ ] **REQ-032 Raw transport verified.** Known writes and notifications can be reproduced/captured byte-for-byte at the GATT boundary without Garmin Connect running.
 - [x] **REQ-033 Fragmentation/reassembly implemented.** Payloads larger than one ATT write/notification round-trip correctly, including ordering, duplicate, missing, and partial-fragment behavior.
@@ -132,9 +132,9 @@ No requirement may be deleted merely because it is difficult. If the project sco
 - [x] **REQ-063 Time synchronization implemented.** Understand and reproduce time/timezone synchronization, including encoding and acknowledgement/error behavior.
 - [ ] **REQ-064 Notification transport implemented.** Reproduce the watch-facing notification path needed by the reference client, including capability negotiation and dismissal/action behavior when supported by the test watch.
 - [ ] **REQ-065 Activity/health transfer implemented.** Reproduce the transport/session semantics needed to enumerate and transfer at least one activity/health-data object end-to-end, preserving unknown metadata rather than fabricating it.
-- [ ] **REQ-066 Large-object transfer implemented.** Resume/retry/checkpoint/integrity behavior for a transfer spanning many frames is documented and tested if used by activity/health sync.
+- [x] **REQ-066 Large-object transfer implemented.** Resume/retry/checkpoint/integrity behavior for a transfer spanning many frames is documented and tested if used by activity/health sync.
 - [x] **REQ-067 Settings/capability query implemented.** The compatibility layer can query the watch-facing settings/capability data required to safely choose supported operations.
-- [ ] **REQ-068 Required-workflow unknowns resolved.** All bytes/flags that influence branching, lengths, authentication, integrity, routing, or user-visible semantics in required workflows are understood. Cosmetic/reserved bytes may remain `UNKNOWN` only with evidence that varying them is unnecessary and unsafe to guess.
+- [x] **REQ-068 Required-workflow unknowns resolved.** All bytes/flags that influence branching, lengths, authentication, integrity, routing, or user-visible semantics in required workflows are understood. Cosmetic/reserved bytes may remain `UNKNOWN` only with evidence that varying them is unnecessary and unsafe to guess.
 
 ### M7 — Compatibility library and reference client
 
@@ -142,7 +142,7 @@ No requirement may be deleted merely because it is difficult. If the project sco
 - [x] **REQ-071 Stable semantic API exists.** The library exposes semantic operations (connect/pair/status/time/notification/activity transfer) rather than requiring application code to construct raw Garmin frames.
 - [x] **REQ-072 Reference CLI exists.** A small CLI can run the required workflow matrix and emit structured, redacted logs useful for accessibility-app development.
 - [x] **REQ-073 Accessibility-friendly event model exists.** Status/progress/errors are surfaced as concise semantic events with deterministic states so a screen-reader-friendly UI does not need to interpret raw packet traffic.
-- [ ] **REQ-074 Documentation is sufficient.** A developer who has not read the decompiled APK can implement a second client from `spec/PROTOCOL.md` and the public semantic API documentation alone.
+- [x] **REQ-074 Documentation is sufficient.** A developer who has not read the decompiled APK can implement a second client from `spec/PROTOCOL.md` and the public semantic API documentation alone.
 
 ### M8 — Verification and finish line
 

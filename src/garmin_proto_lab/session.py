@@ -81,6 +81,28 @@ class PairingStore(Protocol):
     def delete(self, device_id: str) -> None: ...
 
 
+def requires_system_bond(
+    store: PairingStore,
+    device_id: str,
+    *,
+    force: bool = False,
+    force_garmin_auth: bool = False,
+) -> bool:
+    """Return the pairing connection's OS-bond requirement.
+
+    Garmin Connect's fresh pairing path requests a system Bluetooth bond when
+    no proprietary LTK/EDIV/RAND record exists. A saved Garmin-auth record uses
+    the unbonded 5102 reconnect path. ``force_garmin_auth`` exposes the latter
+    path for a fresh interoperability test; it is mutually exclusive with
+    ``force``.
+    """
+    if force and force_garmin_auth:
+        raise SessionError("system-bond and Garmin-auth forcing are mutually exclusive")
+    if force_garmin_auth:
+        return False
+    return force or store.load(device_id) is None
+
+
 @dataclass(slots=True)
 class MemoryPairingStore:
     """Non-persistent test/reference store; never serializes secrets to disk."""

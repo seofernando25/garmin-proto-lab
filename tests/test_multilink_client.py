@@ -27,11 +27,27 @@ class FakeBackend:
     async def write(self, characteristic_uuid, data: bytes) -> None:
         raw = bytes(data)
         self.writes.append((characteristic_uuid, raw))
-        if not raw or raw[0] != 0:
+        if not raw:
             return
-        command = raw[1]
         notify = MULTILINK_PRIMARY_CHARACTERISTICS[0]
         callback = self.callbacks[notify]
+        if raw[0] == 1:
+            if len(raw) >= 2 and raw[1] == 0:
+                await callback(b"\x01\x00\x02")  # page 0: service ID 1 supported
+            elif len(raw) >= 2 and raw[1] == 1:
+                await callback(b"\x01\x01\x00\x13\x40")
+            elif len(raw) >= 2 and raw[1] == 2:
+                await callback(b"\x01\x02\x01\x02\x02")  # v2.2.1
+            elif len(raw) >= 2 and raw[1] == 3:
+                await callback(b"\x01\x03\x04\x0c\x14\x05\xef\xbe\xad\xde")
+            elif len(raw) >= 2 and raw[1] == 4:
+                await callback(b"\x01\x04" + bytes(range(16)))
+            elif len(raw) >= 4 and raw[1] == 5:
+                await callback(b"\x01" + raw[1:4] + b"\x00\x07")
+            return
+        if raw[0] != 0:
+            return
+        command = raw[1]
         connection = raw[2:10]
         if command == 5:
             await callback(b"\x00\x06" + connection + b"\x00\x00\x00")
@@ -68,6 +84,18 @@ def test_initialize_register_file_transfer_route_data_and_close() -> None:
         registration = await client.initialize()
         assert registration.service_id == REGISTRATION_SERVICE_ID
         assert registration.handle == 1
+        assert client.supported_services == frozenset({1})
+        assert await client.query_service_revision(1) == 7
+        assert client.service_revisions[1] == 7
+        info = await client.query_registration_info()
+        assert info.advertising_service_data == b"\x00\x13\x40"
+        assert info.version is not None
+        assert (info.version.major, info.version.minor, info.version.micro) == (2, 2, 1)
+        assert info.product is not None
+        assert info.product.product_number == 3076
+        assert info.product.firmware_version == 1300
+        assert info.product.unit_id == 0xDEADBEEF
+        assert info.identity_address == bytes(range(16))
         assert client.notify_uuid == MULTILINK_PRIMARY_CHARACTERISTICS[0]
         assert client.write_uuid == MULTILINK_PAIRED_CHARACTERISTICS[0]
 
@@ -104,3 +132,17 @@ def test_multilink_rejects_missing_service_and_oversize_packet() -> None:
 
     asyncio.run(run_missing())
     asyncio.run(run_oversize())
+
+
+def test_open_gfdi_service_accepts_reliable_registration() -> None:
+    async def run() -> None:
+        backend = FakeBackend()
+        client = MultiLinkClient(backend, _services(), 0x0102030405060708, 20)  # type: ignore[arg-type]
+        await client.initialize()
+        service = await client.open_gfdi_service()
+        assert service.service_id == 1
+        assert service.handle == 0x80
+        assert service.reliable is True
+        assert service.revision == 7
+
+    asyncio.run(run())

@@ -1,61 +1,92 @@
 # Hardware verification runbook
 
-Use this only with the owner's watch/account. Raw captures stay under ignored `captures/`; committed evidence must be sanitized.
+Use the owner's watch/account. Raw captures stay under ignored `captures/`; committed evidence is sanitized.
 
-## 1. Record device baseline
+## 1. Baseline
 
-Before changing pairing state, record watch model/firmware, host OS/version, Garmin Connect version used for the reference trace, and whether Bluetooth/Garmin pairing already exists. Do not commit serials, MAC addresses, account IDs, or pairing secrets.
+Record watch model/firmware, host OS/version, Garmin Connect reference version, current OS bond state and current GFDI pairing state. Do not commit serials, MAC addresses, account IDs or key material.
 
-## 2. Reference Garmin Connect trace
+## 2. Reference Garmin Connect captures
 
-On an Android test phone, enable **Bluetooth HCI snoop log**, then perform one operation per capture. Export the bug report/HCI log after each run. The minimum reference sequence is:
+Enable Android Bluetooth HCI snoop logging and record one operation per capture:
 
-1. clean BLE service discovery;
-2. fresh pair/authentication;
+1. clean GATT discovery;
+2. fresh system-bond pairing and, as a separate capture, fresh unbonded Garmin-auth 5101–5111 pairing;
 3. reconnect after app restart;
 4. reconnect after Bluetooth toggle;
 5. reconnect after watch reboot;
 6. one device-info/battery exchange;
 7. one time sync;
-8. notification subscribe + one notification + one supported action/dismissal;
-9. file-type query + directory listing + one representative activity/health download; if flag 90 is present, also record FileAccess/MultiLink registration and the first reliable packets;
-10. interrupt one larger download and observe restart/resume behavior.
+8. notification subscribe + source + one supported action;
+9. legacy file types + directory + one activity/health download;
+10. FileAccess capability/listing + MultiLink registration + one activity/monitoring/sleep pull when advertised;
+11. interrupt one large pull and record resume/recovery.
 
-When `adb` is available, a bug report can be collected with `adb bugreport captures/<name>.zip`. Never commit the raw archive.
+Collect a bug report with `adb bugreport captures/<name>.zip` when available. Raw archives are never committed.
 
-## 3. Independent-client trace on ferpc
+## 3. Independent client on ferpc
 
-BlueZ `btmon` writes btsnoop directly, but opening the HCI monitor channel may require root or suitable Linux capabilities:
+Start one Bluetooth monitor capture per experiment:
 
 ```bash
 mkdir -p captures
 btmon -w captures/independent.btsnoop
 ```
 
-In another terminal, progress from least invasive to full workflow:
+Run the client in another terminal:
 
 ```bash
 uv run garmin-proto scan --seconds 8
 uv run garmin-proto services <address>
 uv run garmin-proto probe <address>
+uv run garmin-proto reset-pairing <address>
 uv run garmin-proto pair <address>
+uv run garmin-proto fitness-sync <address> --output ~/Garmin-FIT
+```
+
+For a fresh-pair run, `reset-pairing` removes the saved GFDI record and the BlueZ bond first. Default `pair` follows Garmin Connect’s bonded route: create the OS bond, then complete GFDI with proprietary Garmin auth disabled. On Linux a temporary terminal `KeyboardDisplay` BlueZ agent handles passkey entry/confirmation. Run a second controlled case with `pair <address> --garmin-auth` to exercise 5101–5111 and LTK/EDIV/RAND persistence without system bonding. On the bonded route, later runs detect and reuse the existing BlueZ bond. On the unbonded Garmin-auth route, persisted LTK/EDIV/RAND drives 5102 reconnect without requesting a system bond. Use `--system-bond` to force a bond on a saved pairing record for comparison.
+
+Protocol-focused probes remain available:
+
+```bash
 uv run garmin-proto workflow <address>
 uv run garmin-proto workflow <address> --download-first-activity
-# Only after flag 90/FileAccess is observed:
 uv run garmin-proto workflow <address> --next-gen-files --skip-files
 uv run garmin-proto workflow <address> --download-first-next-gen-fitness --skip-files
 ```
 
-Stop `btmon` after the single intended experiment. Use a new capture for each state transition instead of recording a long mixed session.
+Stop `btmon` immediately after the intended state transition.
 
-## 4. Required correlation
+## 4. Correlation record
 
-For every baseline GATT operation, record a sanitized `D-####` observation containing direction, service/characteristic, operation type, length, and protocol interpretation. Correlate it to the static `S-####` path or mark it unresolved. Secret bytes are replaced by their role and length, not copied into notes.
+For every baseline GATT operation, create a sanitized `D-####` observation with direction, service/characteristic, operation, length and protocol interpretation. Link it to the corresponding `S-####` static evidence and `P-####` protocol fact. Replace secret bytes with their role and length.
 
-Minimum facts to confirm before checking M2 are: active GFDI service/characteristic pair, negotiated MTU, subscription order, 5024/5050 ordering, 5101-5111 pairing/reconnect order, persistence boundary, and whether Smart protobuf flag 95 is used by this watch. If configuration flag 90 is present, also confirm the MultiLink 0x281x/0x282x pair, registration service 4, a reliable FileAccess service ID, and the read-pipe configure/status lifecycle before enabling next-gen downloads by default.
+Record these before completing M2:
+
+- active GFDI physical route: dedicated pair or MultiLink service 1, plus the selected read/write characteristics;
+- negotiated MTU and subscription order;
+- 5024/5050 startup order;
+- 5101–5111 fresh-pair order and user prompt;
+- default system-bond result and reuse of the existing OS bond on reconnect;
+- separate unbonded Garmin-auth LTK/EDIV/RAND persistence and 5102 reconnect;
+- persisted LTK/EDIV/RAND reconnect behavior;
+- flags 90/95 on the target;
+- MultiLink characteristic pair, registration service 4 and returned FileAccess reliable handle;
+- read-pipe configure, MLR SN/RN progression, ACK timing, Transfer Status and checksum lifecycle.
 
 ## 5. Recovery matrix
 
-After one successful independent pair, rerun the workflow after each isolated condition: client restart, Bluetooth toggle, watch reboot, host reboot, out-of-range/reconnect, deliberate request timeout, and interrupted large transfer. Garmin Connect must be stopped/uninstalled for the final v1 integration pass.
+After a successful pair, rerun after each isolated condition:
 
-The project is not complete because a trace "looks right". Update `spec/PROTOCOL.md`, add sanitized tests/fixtures where possible, link the `D-####` evidence, then check the matching `GOAL.md` requirement.
+- client restart;
+- Bluetooth toggle;
+- watch reboot;
+- host reboot;
+- out-of-range reconnect;
+- deliberate GFDI/Protobuf request timeout;
+- dropped MLR ACK / retransmission timeout;
+- interrupted FileAccess pull followed by `.part` resume;
+- compressed FileAccess pull;
+- legacy compressed pull and uncompressed fallback.
+
+The final acceptance run is performed with Garmin Connect stopped or absent. Update the protocol spec, add sanitized fixtures/tests, attach `D-####` evidence and only then check the corresponding `GOAL.md` requirements.

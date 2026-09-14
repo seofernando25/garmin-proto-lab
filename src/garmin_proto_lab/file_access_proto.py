@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
+import hashlib
 from uuid import UUID
 
 from .protobuf_wire import (
@@ -109,6 +110,19 @@ class MlrPipeDirection(IntEnum):
     WRITE = 1
 
 
+class MlrPipeGeneralStatus(IntEnum):
+    SUCCESS = 0
+    UNKNOWN_COMMAND = 1
+    INVALID_COMMAND_DATA = 2
+
+
+class MlrPipeConfigureStatus(IntEnum):
+    SUCCESS = 0
+    UNKNOWN_TRANSFER_HANDLE = 1
+    UNEXPECTED_TRANSFER_DIRECTION = 2
+    UNEXPECTED_TRANSFER_SIZE = 3
+
+
 class TransferPriorityLevel(IntEnum):
     LOWEST_START = 0
     LOWEST_END = 9
@@ -137,6 +151,15 @@ class ChecksumMethod(IntEnum):
     TRUNCATED_MD5 = 1
 
 
+class GetItemChecksumResult(IntEnum):
+    UNSPECIFIED = 0
+    SUCCESS = 1
+    FAIL_ITEM_DOES_NOT_EXIST = 2
+    FAIL_ITEM_SIZE_TOO_LARGE = 3
+    FAIL_INTERNAL_ERROR = 4
+    FAIL_DEVICE_IS_BUSY = 5
+
+
 class TransferFailureReason(IntEnum):
     TRANSPORT_FAILED = 0
     HIGHER_PRIORITY_REQUEST_RECEIVED = 1
@@ -151,6 +174,42 @@ class CancelTransferStatus(IntEnum):
     UNKNOWN_TRANSFER = 1
 
 
+class DeleteItemResult(IntEnum):
+    SUCCESS = 0
+    ITEM_DOES_NOT_EXIST = 1
+    ITEM_CANNOT_BE_DELETED = 2
+    TRANSFER_IN_PROGRESS = 3
+    DELETE_FAILED = 4
+    INVALID_PARAMS = 5
+    OPERATION_NOT_SUPPORTED = 6
+
+
+class PriorityUpdateStatus(IntEnum):
+    SUCCESS = 0
+    INVALID_PRIORITY = 1
+    UNKNOWN_TRANSFER = 2
+
+
+class ModifyFlagsStatus(IntEnum):
+    SUCCESS = 0
+    FAIL_ITEM_NOT_PROVIDED = 1
+    FAIL_ITEM_NOT_FOUND = 2
+    FAIL_FLAGS_NOT_PROVIDED = 3
+    FAIL_MAX_FLAGS_REACHED = 4
+    FAIL_OTHER = 5
+
+
+class ResourceUpdateStatus(IntEnum):
+    CURRENT_PRIORITY_LOWERED = 1
+    FILE_SPACE_FREED = 2
+
+
+class SoftwareUpdateRequestor(IntEnum):
+    DISPLAY = 0
+    APP = 1
+
+
+
 def _enum(enum_type, value: int | None):
     if value is None:
         return None
@@ -158,6 +217,17 @@ def _enum(enum_type, value: int | None):
         return enum_type(value)
     except ValueError:
         return value
+
+
+
+def _message_values(fields: tuple[WireField, ...], number: int) -> tuple[bytes, ...]:
+    values: list[bytes] = []
+    for field in fields:
+        if field.number == number:
+            if field.wire_type is not WireType.LENGTH_DELIMITED or not isinstance(field.value, bytes):
+                raise ProtobufWireError(f"field {number} is not a length-delimited message")
+            values.append(field.value)
+    return tuple(values)
 
 
 def _stringsafe(raw: bytes | None) -> str | None:
@@ -446,6 +516,218 @@ class PullItemResponse:
 
 
 @dataclass(frozen=True, slots=True)
+class PushItemRequest:
+    item: FileItemReference
+    priority: int
+    supported_transports: tuple[TransportProtocol | int, ...] = (TransportProtocol.MULTILINK_TRANSPORT_PIPE,)
+    requested_compression_window: int | None = None
+
+    def encode(self) -> bytes:
+        out = bytearray(encode_message(1, self.item.encode()) + encode_uint(2, self.priority))
+        for transport in self.supported_transports:
+            out += encode_uint(3, int(transport))
+        if self.requested_compression_window is not None:
+            out += encode_uint(4, self.requested_compression_window)
+        return bytes(out)
+
+
+@dataclass(frozen=True, slots=True)
+class PushItemResponse:
+    result: ItemAccessResult | int | None
+    offset: int | None
+    transport: TransportProtocol | int | None
+    transfer_handle: int | None
+    file_path: str | None
+    error_code: int | None
+    error_source: int | None
+    compression_window: int | None
+    data_specific_error_source: int | None
+    data_specific_error_code: int | None
+    raw_fields: tuple[WireField, ...]
+
+    @classmethod
+    def parse(cls, data: bytes) -> "PushItemResponse":
+        fields = parse_fields(data)
+        raw_error = last_varint(fields, 6)
+        raw_specific = last_varint(fields, 10)
+        return cls(
+            _enum(ItemAccessResult, last_varint(fields, 1)),
+            last_varint(fields, 2),
+            _enum(TransportProtocol, last_varint(fields, 3)),
+            last_varint(fields, 4),
+            _stringsafe(last_bytes(fields, 5)),
+            None if raw_error is None else decode_sint32(raw_error),
+            last_varint(fields, 7),
+            last_varint(fields, 8),
+            last_varint(fields, 9),
+            None if raw_specific is None else decode_sint32(raw_specific),
+            fields,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteItemRequest:
+    uid: UUID
+    direction: TransferDirection | int
+
+    def encode(self) -> bytes:
+        return encode_message(1, encode_uuid(self.uid)) + encode_uint(2, int(self.direction))
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteItemResponse:
+    result: DeleteItemResult | int | None
+    error_code: int | None
+    error_source: int | None
+    raw_fields: tuple[WireField, ...]
+
+    @classmethod
+    def parse(cls, data: bytes) -> "DeleteItemResponse":
+        fields = parse_fields(data)
+        return cls(
+            _enum(DeleteItemResult, last_varint(fields, 1)),
+            last_varint(fields, 2),
+            last_varint(fields, 3),
+            fields,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PriorityUpdateRequest:
+    transfer_handle: int
+    new_priority: int
+
+    def encode(self) -> bytes:
+        return encode_uint(1, self.transfer_handle) + encode_uint(2, self.new_priority)
+
+
+@dataclass(frozen=True, slots=True)
+class PriorityUpdateResponse:
+    status: PriorityUpdateStatus | int | None
+    raw_fields: tuple[WireField, ...]
+
+    @classmethod
+    def parse(cls, data: bytes) -> "PriorityUpdateResponse":
+        fields = parse_fields(data)
+        return cls(_enum(PriorityUpdateStatus, last_varint(fields, 1)), fields)
+
+
+@dataclass(frozen=True, slots=True)
+class ItemListCancelNotification:
+    session_id: int | None
+    raw_fields: tuple[WireField, ...]
+
+    @classmethod
+    def parse(cls, data: bytes) -> "ItemListCancelNotification":
+        fields = parse_fields(data)
+        return cls(last_varint(fields, 1), fields)
+
+
+@dataclass(frozen=True, slots=True)
+class ItemAddedNotification:
+    items: tuple[FileItemReference, ...]
+    raw_fields: tuple[WireField, ...]
+
+    @classmethod
+    def parse(cls, data: bytes) -> "ItemAddedNotification":
+        fields = parse_fields(data)
+        return cls(tuple(FileItemReference.parse(value) for value in _message_values(fields, 1)), fields)
+
+
+@dataclass(frozen=True, slots=True)
+class ModifyFlagsRequest:
+    uid: UUID
+    set_flags: tuple[UUID, ...] = ()
+    clear_flags: tuple[UUID, ...] = ()
+
+    def encode(self) -> bytes:
+        out = bytearray(encode_message(1, encode_uuid(self.uid)))
+        for flag in self.set_flags:
+            out += encode_message(2, encode_uuid(flag))
+        for flag in self.clear_flags:
+            out += encode_message(3, encode_uuid(flag))
+        return bytes(out)
+
+
+@dataclass(frozen=True, slots=True)
+class ModifyFlagsResponse:
+    status: ModifyFlagsStatus | int | None
+    error_source: int | None
+    error_code: int | None
+    raw_fields: tuple[WireField, ...]
+
+    @classmethod
+    def parse(cls, data: bytes) -> "ModifyFlagsResponse":
+        fields = parse_fields(data)
+        return cls(
+            _enum(ModifyFlagsStatus, last_varint(fields, 1)),
+            last_varint(fields, 2),
+            last_varint(fields, 3),
+            fields,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ItemUpdatedNotification:
+    uid: UUID | None
+    changed_flags_set: tuple[UUID, ...]
+    changed_flags_clear: tuple[UUID, ...]
+    raw_fields: tuple[WireField, ...]
+
+    @classmethod
+    def parse(cls, data: bytes) -> "ItemUpdatedNotification":
+        fields = parse_fields(data)
+        raw_uid = last_bytes(fields, 1)
+        return cls(
+            parse_uuid(raw_uid) if raw_uid is not None else None,
+            tuple(parse_uuid(value) for value in _message_values(fields, 2)),
+            tuple(parse_uuid(value) for value in _message_values(fields, 3)),
+            fields,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceUpdateNotification:
+    status: ResourceUpdateStatus | int | None
+    current_priority: int | None
+    raw_fields: tuple[WireField, ...]
+
+    @classmethod
+    def parse(cls, data: bytes) -> "ResourceUpdateNotification":
+        fields = parse_fields(data)
+        return cls(_enum(ResourceUpdateStatus, last_varint(fields, 1)), last_varint(fields, 2), fields)
+
+
+@dataclass(frozen=True, slots=True)
+class SyncButtonNotification:
+    raw_fields: tuple[WireField, ...] = ()
+
+    @classmethod
+    def parse(cls, data: bytes) -> "SyncButtonNotification":
+        return cls(parse_fields(data))
+
+
+@dataclass(frozen=True, slots=True)
+class SoftwareUpdatePartNumberRequest:
+    requestor: SoftwareUpdateRequestor | int
+
+    def encode(self) -> bytes:
+        return encode_uint(1, int(self.requestor))
+
+
+@dataclass(frozen=True, slots=True)
+class SoftwareUpdatePartNumberResponse:
+    part_numbers: tuple[str, ...]
+    raw_fields: tuple[WireField, ...]
+
+    @classmethod
+    def parse(cls, data: bytes) -> "SoftwareUpdatePartNumberResponse":
+        fields = parse_fields(data)
+        values = tuple(value.decode("utf-8", errors="replace") for value in _message_values(fields, 1))
+        return cls(values, fields)
+
+
+@dataclass(frozen=True, slots=True)
 class TransferStatusRequest:
     uid: UUID | None = None
     transfer_handle: int | None = None
@@ -522,9 +804,17 @@ class CancelTransferResponse:
 
 
 @dataclass(frozen=True, slots=True)
+class GetItemChecksumRequest:
+    uid: UUID
+
+    def encode(self) -> bytes:
+        return encode_message(1, encode_uuid(self.uid))
+
+
+@dataclass(frozen=True, slots=True)
 class GetItemChecksumResponse:
     uid: UUID | None
-    result: int | None
+    result: GetItemChecksumResult | int | None
     checksum_truncated_md5: int | None
     raw_fields: tuple[WireField, ...]
 
@@ -534,7 +824,7 @@ class GetItemChecksumResponse:
         uid = last_bytes(fields, 1)
         return cls(
             parse_uuid(uid) if uid is not None else None,
-            last_varint(fields, 2),
+            _enum(GetItemChecksumResult, last_varint(fields, 2)),
             last_fixed64(fields, 3),
             fields,
         )
@@ -592,6 +882,107 @@ def build_transfer_status_smart_response(response: TransferStatusResponse | None
     return build_file_access_smart(build_service_message(SERVICE_TRANSFER_STATUS_RESPONSE, payload))
 
 
+def build_push_item_smart(request: PushItemRequest) -> bytes:
+    return build_file_access_smart(build_service_message(SERVICE_PUSH_ITEM_REQUEST, request.encode()))
+
+
+def parse_push_item_smart_response(smart_bytes: bytes) -> PushItemResponse:
+    raw = service_message(smart_bytes, SERVICE_PUSH_ITEM_RESPONSE)
+    if raw is None:
+        raise ProtobufWireError("FileAccess service has no push-item response")
+    return PushItemResponse.parse(raw)
+
+
+def build_priority_update_smart(request: PriorityUpdateRequest) -> bytes:
+    return build_file_access_smart(build_service_message(SERVICE_PRIORITY_UPDATE_REQUEST, request.encode()))
+
+
+def parse_priority_update_smart_response(smart_bytes: bytes) -> PriorityUpdateResponse:
+    raw = service_message(smart_bytes, SERVICE_PRIORITY_UPDATE_RESPONSE)
+    if raw is None:
+        raise ProtobufWireError("FileAccess service has no priority-update response")
+    return PriorityUpdateResponse.parse(raw)
+
+
+def parse_item_list_cancel_smart_notification(smart_bytes: bytes) -> ItemListCancelNotification | None:
+    raw = service_message(smart_bytes, SERVICE_ITEM_LIST_CANCEL_NOTIFICATION)
+    return ItemListCancelNotification.parse(raw) if raw is not None else None
+
+
+def parse_item_added_smart_notification(smart_bytes: bytes) -> ItemAddedNotification | None:
+    raw = service_message(smart_bytes, SERVICE_ITEM_ADDED_NOTIFICATION)
+    return ItemAddedNotification.parse(raw) if raw is not None else None
+
+
+def build_delete_item_smart(request: DeleteItemRequest) -> bytes:
+    return build_file_access_smart(build_service_message(SERVICE_DELETE_ITEM_REQUEST, request.encode()))
+
+
+def parse_delete_item_smart_response(smart_bytes: bytes) -> DeleteItemResponse:
+    raw = service_message(smart_bytes, SERVICE_DELETE_ITEM_RESPONSE)
+    if raw is None:
+        raise ProtobufWireError("FileAccess service has no delete-item response")
+    return DeleteItemResponse.parse(raw)
+
+
+def build_modify_flags_smart(request: ModifyFlagsRequest) -> bytes:
+    return build_file_access_smart(build_service_message(SERVICE_MODIFY_FLAGS_REQUEST, request.encode()))
+
+
+def parse_modify_flags_smart_response(smart_bytes: bytes) -> ModifyFlagsResponse:
+    raw = service_message(smart_bytes, SERVICE_MODIFY_FLAGS_RESPONSE)
+    if raw is None:
+        raise ProtobufWireError("FileAccess service has no modify-flags response")
+    return ModifyFlagsResponse.parse(raw)
+
+
+def parse_item_updated_smart_notification(smart_bytes: bytes) -> ItemUpdatedNotification | None:
+    raw = service_message(smart_bytes, SERVICE_ITEM_UPDATED_NOTIFICATION)
+    return ItemUpdatedNotification.parse(raw) if raw is not None else None
+
+
+def parse_resource_update_smart_notification(smart_bytes: bytes) -> ResourceUpdateNotification | None:
+    raw = service_message(smart_bytes, SERVICE_RESOURCE_UPDATE_NOTIFICATION)
+    return ResourceUpdateNotification.parse(raw) if raw is not None else None
+
+
+def parse_sync_button_smart_notification(smart_bytes: bytes) -> SyncButtonNotification | None:
+    raw = service_message(smart_bytes, SERVICE_SYNC_BUTTON_NOTIFICATION)
+    return SyncButtonNotification.parse(raw) if raw is not None else None
+
+
+def build_software_update_part_number_smart(request: SoftwareUpdatePartNumberRequest) -> bytes:
+    return build_file_access_smart(build_service_message(SERVICE_SOFTWARE_UPDATE_PART_NUMBER_REQUEST, request.encode()))
+
+
+def parse_software_update_part_number_smart_response(smart_bytes: bytes) -> SoftwareUpdatePartNumberResponse:
+    raw = service_message(smart_bytes, SERVICE_SOFTWARE_UPDATE_PART_NUMBER_RESPONSE)
+    if raw is None:
+        raise ProtobufWireError("FileAccess service has no software-update-part-number response")
+    return SoftwareUpdatePartNumberResponse.parse(raw)
+
+
+def build_get_item_checksum_smart(request: GetItemChecksumRequest) -> bytes:
+    return build_file_access_smart(build_service_message(SERVICE_GET_ITEM_CHECKSUM_REQUEST, request.encode()))
+
+
+def parse_get_item_checksum_smart_response(smart_bytes: bytes) -> GetItemChecksumResponse:
+    raw = service_message(smart_bytes, SERVICE_GET_ITEM_CHECKSUM_RESPONSE)
+    if raw is None:
+        raise ProtobufWireError("FileAccess service has no get-item-checksum response")
+    return GetItemChecksumResponse.parse(raw)
+
+
+def truncated_md5(data: bytes) -> int:
+    """Return Garmin FileAccess TRUNCATED_MD5 as a uint64 wire value.
+
+    The first eight bytes of the MD5 digest are interpreted little-endian before
+    protobuf fixed64 serialization.
+    """
+    digest8 = hashlib.md5(bytes(data)).digest()[:8]
+    return int.from_bytes(digest8, "little")
+
+
 def build_cancel_transfer_smart(request: CancelTransferRequest) -> bytes:
     return build_file_access_smart(build_service_message(SERVICE_CANCEL_TRANSFER_REQUEST, request.encode()))
 
@@ -621,19 +1012,21 @@ class MlrPipeConfigure:
 
 @dataclass(frozen=True, slots=True)
 class MlrPipeConfigureResponse:
-    general_status: int
-    configure_status: int | None
+    general_status: MlrPipeGeneralStatus | int
+    configure_status: MlrPipeConfigureStatus | int | None
 
     @property
     def successful(self) -> bool:
-        return self.general_status == 0 and self.configure_status == 0
+        return self.general_status is MlrPipeGeneralStatus.SUCCESS and self.configure_status is MlrPipeConfigureStatus.SUCCESS
 
     @classmethod
     def parse(cls, data: bytes) -> "MlrPipeConfigureResponse":
         if len(data) < 2:
             raise ValueError("MLR configure response missing general status")
-        general = data[1]
-        configure = data[2] if general == 0 and len(data) >= 3 else None
-        if general == 0 and configure is None:
+        raw_general = data[1]
+        general = _enum(MlrPipeGeneralStatus, raw_general)
+        raw_configure = data[2] if raw_general == 0 and len(data) >= 3 else None
+        if raw_general == 0 and raw_configure is None:
             raise ValueError("MLR configure response missing configure status")
+        configure = _enum(MlrPipeConfigureStatus, raw_configure)
         return cls(general, configure)

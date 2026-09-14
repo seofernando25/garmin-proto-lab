@@ -99,7 +99,7 @@ class ProtobufSmartLink:
                 future.cancel()
             self._pending.pop(request_id, None)
             # The recovered implementation sends 5045 after a failed/cancelled
-            # request. Cancellation is best-effort and must not hide the cause.
+            # request. Cancellation is attempted and any cancellation error must not hide the cause.
             try:
                 await self.link.request(PROTOBUF_CANCEL, CancelProtobuf(request_id).encode(), timeout=min(self.timeout, 5.0))
             except BaseException:

@@ -205,7 +205,7 @@ def test_directory_file_filter_archive_and_legacy_types() -> None:
     assert item.file_index == 7
     assert item.data_type == 128
     assert item.subtype == 4
-    assert item.unknown_6 == 0x9C
+    assert item.reserved_6 == 0x9C
     assert item.flags & DirectoryFileFlag.READ
     assert item.flags & DirectoryFileFlag.ARCHIVE
     assert item.size == 12345

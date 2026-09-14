@@ -39,8 +39,8 @@ class DownloadRequest:
     compression: bool = True
     data_offset: int = 0
     request_flag: int = 1
-    unknown_u16: int = 0
-    unknown_u32: int = 0
+    reserved_u16: int = 0
+    reserved_u32: int = 0
 
     def encode(self) -> bytes:
         if not 0 <= self.file_index <= 0xFFFF:
@@ -49,16 +49,16 @@ class DownloadRequest:
             raise FileTransferError("data_offset out of uint32 range")
         if not 0 <= self.request_flag <= 0xFF:
             raise FileTransferError("request_flag out of byte range")
-        if not 0 <= self.unknown_u16 <= 0xFFFF:
-            raise FileTransferError("unknown_u16 out of uint16 range")
-        if not 0 <= self.unknown_u32 <= 0xFFFFFFFF:
-            raise FileTransferError("unknown_u32 out of uint32 range")
+        if not 0 <= self.reserved_u16 <= 0xFFFF:
+            raise FileTransferError("reserved_u16 out of uint16 range")
+        if not 0 <= self.reserved_u32 <= 0xFFFFFFFF:
+            raise FileTransferError("reserved_u32 out of uint32 range")
         return (
             self.file_index.to_bytes(2, "little")
             + self.data_offset.to_bytes(4, "little")
             + bytes([self.request_flag])
-            + self.unknown_u16.to_bytes(2, "little")
-            + self.unknown_u32.to_bytes(4, "little")
+            + self.reserved_u16.to_bytes(2, "little")
+            + self.reserved_u32.to_bytes(4, "little")
             + bytes([int(self.compression)])
         )
 
@@ -416,7 +416,7 @@ class DirectoryEntry:
     file_index: int
     data_type: int
     identifier: bytes
-    unknown_6: int
+    reserved_6: int
     flags_raw: int
     size: int
     timestamp: int
@@ -451,7 +451,7 @@ def parse_directory_file(data: bytes) -> DirectoryFile:
                 file_index=int.from_bytes(raw[0:2], "little"),
                 data_type=raw[2],
                 identifier=bytes(raw[3:6]),
-                unknown_6=raw[6],
+                reserved_6=raw[6],
                 flags_raw=raw[7],
                 size=int.from_bytes(raw[8:12], "little"),
                 timestamp=int.from_bytes(raw[12:16], "little"),

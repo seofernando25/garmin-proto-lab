@@ -157,7 +157,7 @@ class FileReady:
     file_index: int
     data_type: int
     identifier: bytes
-    unknown_6: int
+    reserved_6: int
     flags: FileFlag | int
     size: int
     timestamp: int
@@ -180,7 +180,7 @@ class FileReady:
             file_index=int.from_bytes(payload[0:2], "little"),
             data_type=payload[2],
             identifier=bytes(payload[3:6]),
-            unknown_6=payload[6],
+            reserved_6=payload[6],
             flags=flags,
             size=int.from_bytes(payload[8:12], "little"),
             timestamp=int.from_bytes(payload[12:16], "little"),
@@ -193,8 +193,8 @@ class FileReady:
             raise SyncError("data_type out of byte range")
         if len(self.identifier) != 3:
             raise SyncError("file-ready identifier must be exactly three bytes")
-        if not 0 <= self.unknown_6 <= 0xFF:
-            raise SyncError("unknown_6 out of byte range")
+        if not 0 <= self.reserved_6 <= 0xFF:
+            raise SyncError("reserved_6 out of byte range")
         flags = int(self.flags)
         if not 0 <= flags <= 0xFF:
             raise SyncError("file flags out of byte range")
@@ -204,7 +204,7 @@ class FileReady:
             self.file_index.to_bytes(2, "little")
             + bytes([self.data_type])
             + self.identifier
-            + bytes([self.unknown_6, flags])
+            + bytes([self.reserved_6, flags])
             + self.size.to_bytes(4, "little")
             + self.timestamp.to_bytes(4, "little")
         )

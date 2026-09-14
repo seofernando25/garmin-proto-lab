@@ -25,11 +25,16 @@ MULTILINK_PAIRED_CHARACTERISTICS = tuple(
     UUID(f"6a4e{value:04x}{GARMIN_MULTILINK_SUFFIX}") for value in range(0x2820, 0x282A)
 )
 
-# Application-defined ID used by this open-source client. The little-endian
-# wire bytes spell ``GPLAB001`` so hardware traces are visibly independent of
-# Garmin Connect. It is not a Garmin-recovered identifier and may be overridden.
-DEFAULT_INDEPENDENT_CLIENT_ID = int.from_bytes(b"GPLAB001", "little")
+# Garmin Connect's bundled client_config.xml declares client_uuid 0x01, and the
+# MultiLink subscriber passes that value directly as the uint64 connection ID.
+# Use the same protocol client identity by default for watch compatibility. The
+# CLI still permits an explicit override for comparative testing.
+GARMIN_CONNECT_MULTILINK_CLIENT_ID = 0x01
+DEFAULT_MULTILINK_CLIENT_ID = GARMIN_CONNECT_MULTILINK_CLIENT_ID
+# Backward-compatible name retained for callers of earlier project revisions.
+DEFAULT_INDEPENDENT_CLIENT_ID = DEFAULT_MULTILINK_CLIENT_ID
 
+GFDI_SERVICE_ID = 1
 REGISTRATION_SERVICE_ID = 4
 REGISTER_FLAG_REQUEST_RELIABLE = 0x02
 REGISTER_RESPONSE_FLAG_RELIABLE = 0x01

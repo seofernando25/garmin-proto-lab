@@ -69,7 +69,7 @@ class NegotiationResponse:
 class StkBeginRequest:
     prefix: int
     timeout_seconds: int
-    unknown_3_4: bytes
+    reserved_3_4: bytes
     mode: PasskeyMode | int
 
     @classmethod
@@ -84,7 +84,7 @@ class StkBeginRequest:
         return cls(
             prefix=payload[0],
             timeout_seconds=int.from_bytes(payload[1:3], "little"),
-            unknown_3_4=bytes(payload[3:5]),
+            reserved_3_4=bytes(payload[3:5]),
             mode=mode,
         )
 
@@ -215,7 +215,7 @@ def derive_session_key(long_term_key: bytes, device_skd8: bytes, host_skd8: byte
 class SessionVerification:
     ignored_prefix: int
     echoed_session_key: bytes
-    unknown_tail8: bytes
+    reserved_tail8: bytes
 
 
 def verify_session_key_message(payload: bytes, session_key: bytes) -> tuple[SessionVerification, bool]:
@@ -237,9 +237,9 @@ def build_session_verification_response(matches: bool, has_session_key: bool = T
 @dataclass(frozen=True, slots=True)
 class SecureSessionRequest:
     selector: int
-    unknown_1_7: bytes
+    reserved_1_7: bytes
     device_iv4: bytes
-    unknown_12_15: bytes
+    reserved_12_15: bytes
 
 
 def decrypt_secure_session_request(payload: bytes, session_key: bytes) -> SecureSessionRequest:
@@ -248,9 +248,9 @@ def decrypt_secure_session_request(payload: bytes, session_key: bytes) -> Secure
     plain = xxtea_decrypt(payload[:16], session_key)
     return SecureSessionRequest(
         selector=plain[0],
-        unknown_1_7=bytes(plain[1:8]),
+        reserved_1_7=bytes(plain[1:8]),
         device_iv4=bytes(plain[8:12]),
-        unknown_12_15=bytes(plain[12:16]),
+        reserved_12_15=bytes(plain[12:16]),
     )
 
 

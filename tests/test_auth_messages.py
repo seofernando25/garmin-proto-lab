@@ -45,7 +45,7 @@ def test_5103_stk_begin_layout_and_valid_modes() -> None:
     assert req.prefix == 9
     assert req.timeout_seconds == 0
     assert req.effective_timeout_seconds == 30
-    assert req.unknown_3_4 == bytes.fromhex("aabb")
+    assert req.reserved_3_4 == bytes.fromhex("aabb")
     assert req.mode is PasskeyMode.VISIBLE
     assert StkBeginResponse.for_request(req).encode() == bytes([0, 0xFF])
 
@@ -101,7 +101,7 @@ def test_5109_session_verification() -> None:
     assert ok is True
     assert parsed.ignored_prefix == 0x55
     assert parsed.echoed_session_key == KEY
-    assert parsed.unknown_tail8 == tail
+    assert parsed.reserved_tail8 == tail
     assert build_session_verification_response(True) == bytes([0])
     assert build_session_verification_response(False) == bytes([2])
     assert build_session_verification_response(False, has_session_key=False) == bytes([1])

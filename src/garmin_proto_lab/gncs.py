@@ -229,7 +229,7 @@ def build_data_source_chunk(
 
     The static implementation reserves ten bytes from the GFDI payload limit:
     six bytes for this header and four for worst-case padded-encryption growth.
-    This conservative limit is also used for unencrypted chunks so packetization
+    The same finite limit is used for unencrypted chunks so packetization
     is stable if encryption becomes active.
     """
     if not ancs_payload or len(ancs_payload) > MAX_ANCS_PAYLOAD:

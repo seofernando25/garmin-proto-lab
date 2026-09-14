@@ -22,3 +22,56 @@ MESSAGE_NAMES = {
     5108: "session_key_skd_distribution", 5109: "session_key_verification",
     5110: "passkey_redisplay", 5111: "secure_session", 5112: "out_of_band_passkey_data",
 }
+
+from dataclasses import dataclass
+from enum import Enum
+
+
+class MessageDisposition(str, Enum):
+    IMPLEMENTED = "implemented"
+    OUTSIDE_FITNESS_SCOPE = "outside_fitness_scope"
+    STATIC_NO_CALLSITE = "static_no_callsite"
+
+
+@dataclass(frozen=True, slots=True)
+class MessageFamily:
+    message_id: int
+    name: str
+    disposition: MessageDisposition
+    rationale: str
+
+
+_IMPLEMENTED = frozenset({
+    5000, 5002, 5004, 5007, 5008, 5009,
+    5022, 5023, 5024, 5026, 5027, 5030, 5031,
+    5033, 5034, 5035, 5036, 5037,
+    5043, 5044, 5045, 5050, 5052, 5054,
+    5101, 5102, 5103, 5104, 5105, 5106, 5107, 5108, 5109, 5111, 5112,
+})
+_STATIC_NO_CALLSITE = frozenset({5110})
+_OUTSIDE_FITNESS_SCOPE = frozenset(MESSAGE_NAMES) - _IMPLEMENTED - _STATIC_NO_CALLSITE
+
+MESSAGE_FAMILIES = {
+    message_id: MessageFamily(
+        message_id,
+        name,
+        (
+            MessageDisposition.IMPLEMENTED
+            if message_id in _IMPLEMENTED
+            else MessageDisposition.STATIC_NO_CALLSITE
+            if message_id in _STATIC_NO_CALLSITE
+            else MessageDisposition.OUTSIDE_FITNESS_SCOPE
+        ),
+        (
+            "implemented by the pairing, notification, status, sync or fitness-transfer stack"
+            if message_id in _IMPLEMENTED
+            else "message name exists in the APK map but no sender/receiver call site exists in this build"
+            if message_id in _STATIC_NO_CALLSITE
+            else "watch protocol family not required for direct pairing and fitness-data extraction"
+        ),
+    )
+    for message_id, name in MESSAGE_NAMES.items()
+}
+
+if set(MESSAGE_FAMILIES) != set(MESSAGE_NAMES):
+    raise RuntimeError("message census does not cover every recovered message ID")

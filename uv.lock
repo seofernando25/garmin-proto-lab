@@ -334,6 +334,7 @@ source = { editable = "." }
 [package.optional-dependencies]
 hardware = [
     { name = "bleak" },
+    { name = "dbus-fast", marker = "sys_platform == 'linux'" },
 ]
 
 [package.dev-dependencies]
@@ -344,7 +345,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "bleak", marker = "extra == 'hardware'", specifier = ">=0.22,<3" }]
+requires-dist = [
+    { name = "bleak", marker = "extra == 'hardware'", specifier = ">=0.22,<3" },
+    { name = "dbus-fast", marker = "sys_platform == 'linux' and extra == 'hardware'", specifier = ">=2.20" },
+]
 provides-extras = ["hardware"]
 
 [package.metadata.requires-dev]

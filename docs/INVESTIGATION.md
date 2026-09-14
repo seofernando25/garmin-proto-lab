@@ -1,82 +1,107 @@
 # Investigation record
 
-This is the concise research record for the public repository. Detailed generated decompiler output and raw captures remain local and are intentionally not published.
+This is the concise public research record. Generated decompiler output, Garmin binaries and raw captures remain local.
 
-## Scope
+## Inputs and method
 
-The studied input is Garmin Connect 5.29 for Android, acquired as an APKM and analyzed locally with JADX and apktool/smali. The goal is interoperability with an owner's watch, not cloning Garmin Connect. Protocol facts are documented independently in `spec/PROTOCOL.md` and implemented in `src/garmin_proto_lab/`.
+Primary input is Garmin Connect 5.29 for Android, analyzed with JADX, Apktool/smali, Ghidra, Rizin/objdump and targeted Python extraction scripts. The x86_64 `libreliable-ml.so` split was analyzed locally for the MultiLink Reliable state machine. Public Garmin BLE work such as Gadgetbridge-derived Garmin Bridge was reviewed as a cross-reference after the APK/native reconstruction.
 
-No existing third-party Garmin protocol implementation has been used as an implementation source.
+Protocol details and evidence IDs are maintained in `spec/PROTOCOL.md` and `evidence/static/STATIC_MAP.md`; executable behavior is in `src/garmin_proto_lab/`.
 
 ## Reconstructed stack
 
 ```text
-Android/BlueZ BLE
-  -> GATT service + read/write characteristics
-  -> notification/write byte stream
-  -> zero-delimited COBS
-  -> GFDI frame + CRC-16
-  -> optional XXTEA secure-session wrapper
-  -> request/response dispatcher
-  -> device/config/battery/time/legacy-file/GNCS + Smart protobuf handlers
-  -> optional FileAccess protobuf control -> MultiLink GATT -> MLR reliable packets
+BLE GATT
+  -> Garmin service/read/write characteristics
+  -> zero-delimited COBS byte stream
+  -> GFDI frame + CRC-16/ARC
+  -> optional XXTEA secure wrapper
+  -> GFDI request/response dispatcher
+       -> authentication 5101..5112
+       -> configuration/device/time/battery
+       -> legacy file transfer
+       -> GNCS notifications
+       -> Smart protobuf 5043/5044/5045
+            -> FileAccess field 43
+            -> MultiLink registration
+            -> MLR reliable transport
+            -> FIT file bytes
 ```
 
-Static evidence indicates Garmin Connect requests ATT MTU 515 and treats notification boundaries as arbitrary stream chunks rather than protocol packet boundaries.
+Garmin Connect requests ATT MTU 515. Notification callback boundaries are stream chunks, not GFDI packet boundaries.
 
-## BLE identifiers
+## Pairing finding
 
-The strongest statically identified GFDI endpoints are:
+Garmin Connect distinguishes first-time system bonding from persisted GFDI authentication. `o72/C37070a.m55705b()` is true when LTK, EDIV, or RAND exists. `w72/C50242e.m69878c` forwards the caller's bond requirement when those fields are absent, but when saved auth material exists it registers the record in `AuthRegistry` and forces `requiresBond=false`.
 
-| Role | UUID |
-|---|---|
-| Connect Mobile service | `9b012401-bc30-ce9a-e111-0f67e491abde` |
-| host write | `df334c80-e6a7-d082-274d-78fc66f85e16` |
-| host notify/read | `4acbcd28-7425-868e-f447-915c8f00d0cb` |
-| generic GFDI write | `6a4e4c80-667b-11e3-949a-0800200c9a66` |
-| generic GFDI notify/read | `6a4ecd28-667b-11e3-949a-0800200c9a66` |
+The fresh pairing strategy `zj2/C55757b.m75743o` constructs a record without LTK/EDIV/RAND and calls the connection manager with system bonding enabled. `yg2/C54129v` owns `BluetoothDevice.createBond()` with a 45-second timeout. After the BLE connection is established, `DefaultAuthDelegate.isGarminAuthAllowed()` returns false for a bonded remote (except the explicit `VIVO` manufacturer special case), so `aq2/C2861i` installs `bq2/C4587y` StubAuthHandler instead of the 5101–5111 AuthHandler. StubAuth completes with null Garmin session keys and fails if 5101 arrives. The saved Garmin-auth reconnect path instead supplies LTK/EDIV/RAND, skips a new system bond request, and runs the proprietary 5102/session sequence.
 
-A real watch must still confirm which service contains the active pair.
+The implementation mirrors both routes. With no Garmin-auth record, `pair`, `workflow`, and `fitness-sync` require the OS bond; the backend first checks the existing BlueZ paired state, so an already bonded watch is not paired again. The separate `--garmin-auth` route skips the OS bond, runs 5101–5111, persists LTK/EDIV/RAND, and uses that record for 5102 reconnect. `--system-bond` forces the bonded route for diagnostics.
 
-## Wire protocol
+Authentication messages 5101–5112 establish the Garmin session. Static dataflow resolves the previously unnamed fields used by the required workflow:
 
-Plain GFDI frames use a little-endian length, a message identifier (or compact transaction form), payload, and CRC-16/ARC. Frames are COBS encoded and carried between zero delimiters.
+- 5103 bytes 3–4 are read by no branch and are preserved as reserved bytes.
+- 5109 decrypts 24 bytes, compares only bytes 0–15 to the session key, and ignores/reserves bytes 16–23.
+- 5111 uses decrypted byte 0 plus device IV bytes 8–11. Bytes 1–7 and 12–15 are reserved on input; the response zero-initializes bytes 1–7, generates host IV bytes 8–11 and random bytes 12–15.
+- 5107 decrypts 32 bytes and persists only LTK 0–15, EDIV 16–17 and RAND 18–25; bytes 26–31 are reserved.
 
-Authentication messages 5101-5112 establish XXTEA-based pairing/session state. Persistent pairing material is LTK + EDIV + RAND; per-connection SKD/session key/IV/counters are ephemeral. The implementation keeps these layers separate and never logs secret material intentionally.
+Persistent reconnect material is LTK + EDIV + RAND. SKD contributions, session key, IVs and secure packet counters are regenerated per connection. `AuthRegistry` callback order is EDIV, RAND, LTK; Garmin's connection worker persists those values under `GBLE_DIV_KEY`, `GBLE_RAND_KEY`, and `GBLE_LTK_KEY`, with no per-session crypto material in that persistence path.
 
-Important feature families recovered for the v1 workflow include:
 
-- 5024 device information
-- 5023 battery status
-- 5026/5030/5052 time and settings
-- 5002/5004/5007/5008/5031/5054 file transfer and directory operations
-- 5033-5036 GNCS notifications
-- 5101-5112 authentication/session
+## File extraction
 
-The complete working message census and field layouts are in `spec/PROTOCOL.md`.
+Two watch-to-host fitness paths are implemented.
 
-## Offline implementation status
+The legacy path uses Supported File Types 5031, Directory Filter 5007, directory index 0, Download File 5002 and File Data 5004/5054. Data type 128 plus FIT subtype identifies activity/health objects; the downloaded FIT File ID is checked against the directory subtype.
 
-The reference library includes transport selection, framing, authentication/session orchestration, semantic handshake, GNCS codecs, legacy file listing/download, FIT inspection, and next-generation FileAccess/MultiLink control plus an offline MLR pull path. Property tests exercise framing, secure counters, file CRC/offset handling, protobuf chunking, exact MultiLink command vectors and MLR vectors recovered from the native library's own format self-test.
+The next-generation path uses Configuration flag 90 and Smart FileAccess extension 43. Static handler selection confirms peer flag 90, not flag 95, decides whether Garmin creates the Sync2/FileAccess manager; flag 95 only enables the optional feature-capability query. The recovered service schema contains fields 1–26 for pull/push, transfer status, priority changes, listing, notifications, delete/modify flags, cancellation, resource/sync notifications, software part numbers and checksums. Fitness sync agents identify `FIT_TYPE_4` activity, `FIT_TYPE_32` monitoring and `FIT_TYPE_49` sleep, plus the other modeled health FIT types.
 
-The important late static finding is that next-generation FileAccess is the one watch-facing path that crosses Garmin JNI: `MLRInitializer` loads `libreliable-ml.so`. Local native analysis recovered the two-byte reliable header, cumulative ACK fields, fragmentation formula and service-registration flow. The read wrapper uses standard zlib `Inflater`; cancellation is an idempotent FileAccess protobuf request (success or unknown-transfer both terminate cleanup). The public implementation is clean-room Python and does not ship/load the Garmin `.so`; adaptive native timer/window policy remains intentionally unimplemented until hardware traces justify it.
+`GetItemChecksum` result method `TRUNCATED_MD5` is the first eight MD5 digest bytes interpreted as a little-endian uint64 and serialized as protobuf fixed64.
 
-Offline tests are evidence for implementation consistency only. They cannot upgrade watch-specific facts to `CONFIRMED`.
+## MultiLink and MLR
+
+FileAccess data travels over Garmin MultiLink service `6A4E2800-667B-11E3-949A-0800200C9A66`. Registration uses service ID 4 and reliable flag `0x02`; FileAccess pipe services are `0x2018, 0x4018, 0x6018, 0x8018, 0xA018, 0xC018, 0xE018`.
+
+Native analysis resolves the complete MLR behavior required by the read path:
+
+- 64 sequence/request values for normal connections; reliable handles `0x80..0x87`.
+- payload capacity `max_write_length - 2` and packet-count formula `(length + max_write_length - 3) // (max_write_length - 2)`.
+- initial send window 32 packets, growth by one on an advancing ACK, maximum 63.
+- cumulative six-bit request number (RN) ACKs and six-bit sequence number (SN).
+- ACK after five received data packets or a 10 ms deferred-ACK timer; outbound traffic piggybacks the current RN.
+- initial RTO 1000 ms, minimum computed RTO 500 ms, timeout doubling capped at 20,000 ms.
+- RTT estimator alpha `1/8`, beta `1/4`, RTO term `sRTT + max(0.5*sRTT, 4*RTTVAR)`.
+- timeout halves the send window and retransmits from the unacknowledged base.
+
+Four native formatter self-test vectors are included in the automated tests: `05 01`, `d0 c2 ff`, `92 cd ff de a2`, `ff ff 01 02 03`.
+
+## Fitness-file integrity and persistence
+
+The extractor validates FIT header signature/size/header CRC, parses File ID global message 0, and verifies the trailing FIT file CRC. FileAccess checksum verification is added when the watch advertises truncated-MD5 support.
+
+`fitness-sync` writes incoming clear bytes to mode-`0600` `.part` files, resumes a subsequent FileAccess pull at the saved byte length, then atomically renames the verified file. Output directories are mode `0700`. A valid already-complete file is reused without another download.
+
+For local interpretation, the public Garmin FIT Python SDK profile at revision `f0d86b18195dbdf9c5b2f135aad5d6ae541f5fbb` (FIT Profile 21.214.0) was used as a field-profile cross-reference. The runtime now projects standard activity and wellness messages—including weight/body composition, blood pressure, monitoring, HRV, resting heart rate, stress, SpO2, sleep levels, respiration rate, and Body Battery—while preserving the raw numeric FIT fields. The SDK is not a runtime dependency.
 
 ## Hardware verification queue
 
-The next watch session should be captured as small, controlled experiments:
+When the watch is available, run isolated captures for:
 
-1. clean BLE service/characteristic discovery and MTU/subscription order;
-2. fresh pairing, including the 5101/5103-5111 sequence and any user prompt;
-3. reconnect after client restart, Bluetooth toggle, watch reboot, and host reboot;
-4. one isolated device-info/battery/time exchange each;
-5. notification subscribe, delivery, action/dismissal where supported;
-6. file-type query, directory listing, one representative activity/health download, then an interrupted larger transfer;
-7. repeat with Garmin Connect stopped/uninstalled to prove runtime independence.
+1. service/characteristic discovery, MTU and subscription order;
+2. fresh system-bond pairing, plus a separate unbonded 5101–5111 Garmin-auth run;
+3. reconnect after client restart, Bluetooth toggle, watch reboot and host reboot;
+4. device-info, battery and time requests;
+5. FileAccess capability/listing plus one activity, monitoring and sleep file where present;
+6. legacy directory/download on the same watch for comparison;
+7. interrupted FileAccess transfer followed by byte-offset resume and checksum/FIT-CRC validation;
+8. final run with Garmin Connect stopped or absent.
 
-Raw captures must stay outside version control. Sanitized observations should be assigned `D-####` identifiers and correlated with the static `S-####` evidence before protocol facts are upgraded.
+Raw captures stay outside version control. Sanitized observations receive `D-####` identifiers and are linked to the matching static/protocol facts.
 
-## Known blocker
+## Current blocker
 
-The target watch is not currently present at the development machine. Static reconstruction is no longer the main blocker: the decisive unknowns are live pairing persistence and whether the target accepts the reconstructed MultiLink registration/MLR behavior for activity/monitoring/sleep downloads. Those claims remain unconfirmed until hardware tests pass.
+The target watch is not present at the development machine. Static analysis and offline implementation no longer block the required pairing/fitness workflow; the remaining unchecked completion items are the device-execution matrix above.
+
+## MultiLink identity and GFDI route
+
+The bundled `assets/client_config.xml` declares client_uuid `0x01`; that value is passed directly into the MultiLink communicator and serialized as the uint64 registration connection ID. The implementation now defaults to `0x01`. Watches without a dedicated GFDI pair are handled through logical MultiLink service 1, with reliable MLR when the peer returns a reliable handle.

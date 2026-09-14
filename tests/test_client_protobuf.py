@@ -194,3 +194,25 @@ def test_file_access_feature_capabilities_are_advertised_only_for_host_flag_90()
         # Empty extension is still present and therefore advertises the handler.
         assert last_bytes(fields, 16) == b""
     asyncio.run(run())
+
+
+def test_file_access_runtime_gate_is_peer_configuration_90_not_feature_capability_95() -> None:
+    async def run() -> None:
+        link = FakeLink()
+        proto = StubProtobuf(link, _feature_response())
+        client = _client(link, proto, frozenset({71, 90}))
+        await _handshake(client, link, {90})
+        assert client.peer_supports_file_access is True
+        assert client.peer_supports_feature_capabilities is False
+        assert client.file_access_capabilities is None
+
+        link2 = FakeLink()
+        proto2 = StubProtobuf(link2, _feature_response(file_access=True))
+        client2 = _client(link2, proto2, frozenset({71, 90}))
+        await _handshake(client2, link2, {90, 95})
+        assert client2.peer_supports_file_access is True
+        assert client2.peer_supports_feature_capabilities is True
+        await client2.refresh_feature_capabilities()
+        assert client2.file_access_capabilities is not None
+
+    asyncio.run(run())

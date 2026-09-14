@@ -82,5 +82,6 @@ def test_multilink_parser_rejects_short_or_non_control_messages() -> None:
         RegisterServiceResponse.parse(b"\x00\x01")
 
 
-def test_independent_default_client_id_is_traceable_and_not_garmin_recovered() -> None:
-    assert DEFAULT_INDEPENDENT_CLIENT_ID.to_bytes(8, "little") == b"GPLAB001"
+def test_default_client_id_matches_bundled_garmin_client_uuid() -> None:
+    assert DEFAULT_INDEPENDENT_CLIENT_ID == 0x01
+    assert DEFAULT_INDEPENDENT_CLIENT_ID.to_bytes(8, "little") == b"\x01" + b"\x00" * 7

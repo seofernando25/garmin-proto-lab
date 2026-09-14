@@ -17,7 +17,8 @@ def _fit_file(file_type: int) -> bytes:
         0x00, file_type,
     ])
     header12 = bytes([14, 0x20]) + (100).to_bytes(2, "little") + len(records).to_bytes(4, "little") + b".FIT"
-    return header12 + crc16_arc(header12).to_bytes(2, "little") + records + b"\x00\x00"
+    body = header12 + crc16_arc(header12).to_bytes(2, "little") + records
+    return body + crc16_arc(body).to_bytes(2, "little")
 
 
 class DummyLink:

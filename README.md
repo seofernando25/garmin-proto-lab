@@ -1,39 +1,53 @@
 # garmin-proto-lab
 
-Independent interoperability research and a clean-room Python reference implementation for Garmin's watch-facing GFDI protocol.
+Open-source interoperability implementation of Garmin's watch-facing GFDI protocol, focused on pairing and direct fitness-data extraction without Garmin Connect.
 
-**Status:** the offline protocol stack is implemented and tested; target-watch verification is still required. This repository does not contain Garmin APKs, decompiled Garmin source, proprietary assets, account credentials, or a dependency on an existing Garmin protocol implementation.
+**Status:** static reconstruction and offline implementation cover the protocol paths required for pairing, reconnect, legacy file transfer, next-generation FileAccess, MultiLink/MLR, and FIT validation. The remaining acceptance gate is execution against a physical Garmin watch.
 
-## What is implemented
+## Implemented
 
-- BLE transport abstraction plus a Bleak/BlueZ backend
-- Garmin service/characteristic selection and ATT stream chunking
-- COBS framing, GFDI frames, CRC-16, request/response correlation
-- XXTEA authentication, pairing/session state, LTK reconnect, secure-session wrapping
-- device information, configuration, battery, time, and Smart protobuf feature capabilities
-- GNCS notification subscription/source/control-point/data-source codecs
-- legacy file directory/download plus basic FIT inspection
-- next-gen FileAccess protobuf, MultiLink registration, clean-room MLR data path, cancel/recovery, and optional zlib pull (offline-tested)
-- semantic client API and `garmin-proto` CLI
-
-The test suite currently covers the reconstructed offline behavior. Passing tests do **not** imply compatibility with a particular watch until the hardware verification matrix in `GOAL.md` passes.
+- BLE discovery, direct GFDI selection, automatic GFDI-over-MultiLink service-1 fallback, ATT write chunking, reconnect handling
+- GFDI COBS framing, CRC-16, transactions, configuration and device information
+- Garmin authentication 5101–5112: visible/just-works/OOB passkeys, STK/LTK, persistent reconnect, session keys and secure wrapping
+- dual pairing modes: system-bonded BLE pairing (Garmin proprietary auth disabled) and unbonded Garmin 5101–5111 authentication with persistent LTK/EDIV/RAND reconnect
+- legacy directory discovery and activity/health FIT downloads
+- Smart protobuf 5043/5044/5045 and FileAccess service fields 1–26 used by the recovered schema
+- MultiLink registration and the MLR reliable transport: 64-value sequence space, cumulative ACKs, 32→63 send window, 10 ms deferred ACK, five-packet ACK threshold, RTT/RTO estimation and retransmission backoff
+- FileAccess pagination, pull/resume, transfer status, cancellation, truncated-MD5 verification, zlib transfer, file-change notifications and control operations
+- activity/monitoring/sleep classification, FIT header/File ID/full-file CRC validation, and standard activity session/lap/sample and wellness decoding
+- persistent `fitness-sync` workflow with resumable `.part` files and private file permissions
 
 ## Quick start
 
 ```bash
 uv sync --group dev
 uv run pytest -q
+python scripts/check_offline_completion.py
 uv run garmin-proto --help
 ```
 
-For BLE hardware commands:
+BLE support:
 
 ```bash
 uv sync --extra hardware
 uv run garmin-proto scan --seconds 8
+uv run garmin-proto reset-pairing <address>   # for a controlled fresh-pair test
+uv run garmin-proto pair <address>
 ```
 
-Useful offline tools:
+On Linux, the hardware backend registers a temporary BlueZ `KeyboardDisplay` Agent1 during the system-bond operation, so a headless terminal can enter/confirm the Bluetooth passkey. `reset-pairing` removes both the OS bond and stored Garmin LTK/EDIV/RAND by default.
+
+Direct fitness extraction:
+
+```bash
+uv run garmin-proto fitness-sync <address> --output ~/Garmin-FIT
+# Optional JSON sidecars with generic FIT records plus decoded standard activity summaries/samples and wellness samples:
+uv run garmin-proto fitness-sync <address> --output ~/Garmin-FIT --fit-json
+```
+
+`fitness-sync` uses next-generation FileAccess when the watch advertises it and otherwise uses the legacy GFDI file path. Completed FIT files are validated before publication; interrupted FileAccess pulls retain a private `.part` file and resume from its byte length on the next run.
+
+Useful protocol tools:
 
 ```bash
 uv run garmin-proto decode <hex-wire-bytes>
@@ -41,16 +55,10 @@ uv run garmin-proto encode 5023 <payload-hex>
 uv run garmin-proto time-payloads
 ```
 
-## Project discipline
+## Documentation
 
-The implementation follows:
+`spec/PROTOCOL.md` is the protocol specification. `docs/INVESTIGATION.md` records the reverse-engineering findings, `docs/API.md` describes the semantic API, `docs/HARDWARE.md` is the watch verification runbook, and `GOAL.md` is the completion contract.
 
-`evidence -> protocol fact -> independent implementation -> automated test -> device verification`
+## Remaining gate
 
-Decompiled output is local evidence only. Runtime code is written from `spec/PROTOCOL.md`, not copied from Garmin code. Existing third-party Garmin protocol implementations are intentionally excluded as implementation inputs until the independent reconstruction is verified.
-
-See `docs/INVESTIGATION.md` for the concise investigation record, `docs/API.md` for the semantic interface, `docs/HARDWARE.md` for the verification runbook, and `GOAL.md` for the non-negotiable completion gate.
-
-## Current blocker
-
-A target Garmin watch is not presently available at the development machine. Static reconstruction can continue, but the decisive gate is now hardware validation: live GATT discovery, fresh pairing/reconnect persistence, and representative legacy/next-gen activity or health downloads. The clean-room MultiLink/MLR path is intentionally conservative (uncompressed by default, immediate cumulative ACKs) until a real watch trace validates timing, service registration, compression, and recovery behavior.
+No Garmin watch is currently attached to the development machine. The unchecked completion items therefore require hardware: live GATT discovery, first-time pairing, persistent reconnect, representative activity/monitoring/sleep downloads, interruption/recovery, and final execution with Garmin Connect stopped or absent.

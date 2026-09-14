@@ -43,7 +43,7 @@ def test_file_ready_preserves_unknown_byte_and_flags() -> None:
         file_index=0x1234,
         data_type=4,
         identifier=bytes([32, 0xAA, 0x55]),
-        unknown_6=0x9C,
+        reserved_6=0x9C,
         flags=FileFlag.READ | FileFlag.ARCHIVE,
         size=123456,
         timestamp=0x10203040,

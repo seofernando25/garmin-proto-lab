@@ -111,7 +111,7 @@ def test_link_selection_requires_complete_pair_and_prefers_dedicated() -> None:
         select_gfdi_link([GattService(CONNECT_MOBILE_SERVICE, (GattCharacteristic(CONNECT_MOBILE_WRITE),))])
 
 
-def test_connection_lifecycle_bond_mtu_subscription_and_write_splitting() -> None:
+def test_unbonded_transport_path_for_probe_or_saved_auth() -> None:
     async def run() -> None:
         backend = FakeBackend()
         transport = BleTransport(backend)
@@ -124,7 +124,8 @@ def test_connection_lifecycle_bond_mtu_subscription_and_write_splitting() -> Non
         assert transport.state is TransportState.AVAILABLE
         assert transport.negotiated_mtu == 100
         assert transport.write_payload_size == 97
-        assert "create_bond" in backend.calls
+        assert "create_bond" not in backend.calls
+        assert "is_bonded" not in backend.calls
         assert ("request_mtu", 515) in backend.calls
         assert backend.notification_callback is not None
 
@@ -146,13 +147,27 @@ def test_connection_lifecycle_bond_mtu_subscription_and_write_splitting() -> Non
         states = [event.state for event in transport.events]
         assert TransportState.SCANNING in states
         assert TransportState.CONNECTING_GATT in states
-        assert TransportState.WAITING_FOR_BOND in states
+        assert TransportState.WAITING_FOR_BOND not in states
         assert TransportState.DISCOVERING_SERVICES in states
         assert TransportState.AVAILABLE in states
         assert states[-2:] == [TransportState.DISCONNECTING, TransportState.FINISHED]
 
     asyncio.run(run())
 
+
+
+def test_explicit_system_bond_path_remains_available() -> None:
+    async def run() -> None:
+        backend = FakeBackend()
+        transport = BleTransport(backend, require_bond=True)
+        assert transport.bond_timeout == 45.0
+        await transport.connect(backend.devices[2], lambda _: None)
+        assert "is_bonded" in backend.calls
+        assert "create_bond" in backend.calls
+        assert TransportState.WAITING_FOR_BOND in [event.state for event in transport.events]
+        await transport.disconnect()
+
+    asyncio.run(run())
 
 def test_connection_failure_is_bounded_and_disconnects() -> None:
     class MissingServiceBackend(FakeBackend):
@@ -214,5 +229,128 @@ def test_unexpected_disconnect_and_bounded_reconnect() -> None:
         assert transport.state is TransportState.AVAILABLE
         reconnect_events = [event.detail for event in transport.events if "reconnect attempt" in event.detail]
         assert reconnect_events == ["reconnect attempt 1/3", "reconnect attempt 2/3", "reconnect attempt 3/3"]
+
+    asyncio.run(run())
+
+
+def test_system_bond_retries_once_like_pairing_strategy() -> None:
+    class RetryBondBackend(FakeBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.bond_calls = 0
+
+        async def create_bond(self) -> None:
+            self.calls.append("create_bond")
+            self.bond_calls += 1
+            if self.bond_calls == 1:
+                raise RuntimeError("first bond attempt failed")
+            self.bonded = True
+
+    async def run() -> None:
+        backend = RetryBondBackend()
+        transport = BleTransport(backend, require_bond=True)
+        await transport.connect(backend.devices[2], lambda _: None)
+        assert backend.bond_calls == 2
+        assert transport.state is TransportState.AVAILABLE
+        await transport.disconnect()
+
+    asyncio.run(run())
+
+
+def test_multilink_gfdi_fallback_when_no_direct_gfdi_service() -> None:
+    from garmin_proto_lab.mlr import MlrPacket
+    from garmin_proto_lab.multilink import (
+        MULTILINK_PAIRED_CHARACTERISTICS,
+        MULTILINK_PRIMARY_CHARACTERISTICS,
+        MULTILINK_SERVICE_UUID,
+        REGISTRATION_SERVICE_ID,
+    )
+
+    class MultiLinkOnlyBackend(FakeBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.bonded = True
+            self.services = [
+                GattService(
+                    MULTILINK_SERVICE_UUID,
+                    (
+                        GattCharacteristic(MULTILINK_PRIMARY_CHARACTERISTICS[0], frozenset({"notify"})),
+                        GattCharacteristic(MULTILINK_PAIRED_CHARACTERISTICS[0], frozenset({"write-without-response"})),
+                    ),
+                )
+            ]
+            self.mtu = 100
+
+        async def write(self, characteristic_uuid: UUID, data: bytes) -> None:
+            await super().write(characteristic_uuid, data)
+            raw = bytes(data)
+            callback = self.notification_callback
+            if callback is None or not raw:
+                return
+            if raw[0] == 1:
+                if len(raw) >= 2 and raw[1] == 0:
+                    await callback(b"\x01\x00\x02")
+                return
+            if raw[0] != 0:
+                return
+            command = raw[1]
+            connection = raw[2:10]
+            if command == 5:
+                await callback(b"\x00\x06" + connection + b"\x00\x00\x00")
+            elif command == 0:
+                service = raw[10:12]
+                service_id = int.from_bytes(service, "little")
+                if service_id == REGISTRATION_SERVICE_ID:
+                    handle, flags = 1, 0
+                else:
+                    handle, flags = 0x80, 1
+                await callback(
+                    b"\x00\x01" + connection + service + b"\x00" + bytes((handle, flags, 1))
+                )
+            elif command == 2:
+                service = raw[10:12]
+                await callback(b"\x00\x03" + connection + service + bytes((raw[12], 0)))
+
+    async def run() -> None:
+        backend = MultiLinkOnlyBackend()
+        transport = BleTransport(backend, operation_timeout=0.5)
+        received: list[bytes] = []
+        link = await transport.connect(backend.devices[2], lambda data: received.append(data))
+        assert link.family == "multilink_gfdi_reliable"
+        assert transport.multilink_client is not None
+
+        await transport.send(b"gfdi-wire-out")
+        reliable_writes = [raw for _, raw in backend.writes if raw and raw[0] & 0x80]
+        assert reliable_writes
+        assert b"".join(MlrPacket.parse(raw).payload for raw in reliable_writes) == b"gfdi-wire-out"
+
+        assert backend.notification_callback is not None
+        await backend.notification_callback(MlrPacket(0x80, b"gfdi-wire-in", True, 0, 1).encode())
+        for _ in range(20):
+            if received:
+                break
+            await asyncio.sleep(0.005)
+        assert received == [b"gfdi-wire-in"]
+        await transport.disconnect()
+        assert transport.state is TransportState.FINISHED
+
+    asyncio.run(run())
+
+
+def test_backend_pair_on_connect_path_precedes_service_discovery() -> None:
+    class PairBeforeDiscoveryBackend(FakeBackend):
+        async def connect_with_pairing(self, device: DiscoveredDevice) -> None:
+            self.calls.append(("connect_with_pairing", device.address))
+            self.bonded = True
+
+    async def run() -> None:
+        backend = PairBeforeDiscoveryBackend()
+        transport = BleTransport(backend, require_bond=True)
+        await transport.connect(backend.devices[2], lambda _: None)
+        assert ("connect_with_pairing", "AA:02") in backend.calls
+        assert "create_bond" not in backend.calls
+        assert backend.calls.index(("connect_with_pairing", "AA:02")) < backend.calls.index("discover_services")
+        assert transport.state is TransportState.AVAILABLE
+        await transport.disconnect()
 
     asyncio.run(run())
